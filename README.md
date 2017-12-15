@@ -12,6 +12,10 @@ Two fortran codes exist in the repository xx20std and xx20, the differences are 
 
 ## Installation
 
+To clone the repository use the follwoing command:
 
+```
+git clone https://github.com/SPHewitt/cafe-dynamic
+```
 
 
