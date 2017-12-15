@@ -1,0 +1,28 @@
+#!/bin/bash --login
+#
+#$Id: job.cray.pbs 2098 2016-06-24 11:29:59Z mexas $
+#
+#        Resource: ARCHER (Cray XC30 (24-core per node))
+#    Batch system: PBSPro_select
+#
+#PBS -j oe
+#PBS -A e515-fsi
+#PBS -l select=8
+#PBS -l walltime=00:20:00
+#PBS -N CAFE
+
+module add PrgEnv-cray
+
+export XT_SYMMETRIC_HEAP_SIZE=700m
+export PGAS_MEMINFO_DISPLAY=1
+export MPICH_MPIIO_STATS=1
+
+# resolve all symlinks to absolute paths
+export PBS_O_WORKDIR=$(readlink -f $PBS_O_WORKDIR)
+
+# Switch to current working directory
+cd $PBS_O_WORKDIR
+
+# Run the parallel program
+aprun -n 192 -N 24 -S 12 -d 1 ./xx20.x xx20
+
