@@ -53,7 +53,8 @@ REAL(iwp)               ::  e,v,det,rho,alpha1,beta1,omega,theta
 REAL(iwp)               ::  period,pi,dtim,volume,c1,c2,c3,c4,q
 REAL(iwp)               ::  real_time,tol,up,alpha,beta,scale
 REAL(iwp)               ::  outDisp(3),send(3),recv(3),tLoad
-     
+REAL(iwp)               ::  scrit_scale
+
 CHARACTER(LEN=15)       ::  element
 CHARACTER(LEN=50)       ::  argv
 CHARACTER(LEN=6)        ::  ch
@@ -119,7 +120,8 @@ real( kind=rdef ) ::                                                   &
   cgca_time_inc,         & ! time increment
   cgca_lres,             & ! linear resolution, cells per unit of length
   cgca_charlen,          & ! characteristic element length
-  cgca_fracvol             ! volume (number) of fractured cells per img
+  cgca_fracvol,           & ! volume (number) of fractured cells per img
+  cgca_scrit_scale         ! Scale for the Critical Stress 
 real( kind=rdef ), allocatable :: cgca_grt(:,:,:)[:,:,:]
 logical( kind=ldef ) :: cgca_solid
 ! logical( kind=ldef ) :: cgca_lflag
@@ -147,7 +149,9 @@ CALL getname(argv,nlen)
 ! Easier Read In File (argv.def)
 CALL READ_DEF(argv,alpha1,beta1,e,element,limit,loaded_nodes,           &
               meshgen,nels,nip,nn,nod,npri,nr,nres,nstep,omega,         &
-              partitioner,rho,theta,tol,v,dtim,scale)
+              partitioner,rho,theta,tol,v,dtim,scale,scrit_scale)
+
+cgca_scrit_scale=scrit_scale
 
 !CALL read_p129(argv,numpe,alpha1,beta1,e,element,limit,loaded_nodes,    &
 !   meshgen,nels,nip,nn,nod,npri,nr,nres,nstep,omega,partitioner,rho,    &
@@ -508,21 +512,12 @@ ALLOCATE(x0_pp(neq_pp),d1x0_pp(neq_pp),x1_pp(neq_pp),vu_pp(neq_pp),     &
 !---------------------------- Calculate Mass Matrix -------------------------
 store_mm_pp=zero
 
-!------ NEW nstep and dtim
-
-! Set Scale to 1 
-!scale=1.0_iwp
-!dtim=0.001_iwp
-
-
-
 IF(numpe==1)THEN
   WRITE(*,"(2(A,F10.4))")"Time Step: ", dtim, " Scale: ", scale 
 ENDIF
 
-
 ! Omega is in Rad/s
-pi=ACOS(-1._iwp); period=2._iwp*pi/omega; !dtim=period/20._iwp
+pi=ACOS(-1._iwp); period=2._iwp*pi/omega;
 
 c1=(1._iwp-theta)*dtim; c2=beta1-c1; c3=alpha1+1._iwp/(theta * dtim)
 c4=beta1+theta*dtim
@@ -721,7 +716,8 @@ timesteps: DO j=1,nstep
 
 !--------------- recover stresses at centroidal gauss point ------------
 ! IF CAFE
-IF(.TRUE. .AND. j .GE. 1500) THEN
+! Manual Input
+IF(.TRUE. .AND. j .GE. 200) THEN
 
   CALL gather(xnew_pp(1:),eld_pp)
 
@@ -812,8 +808,8 @@ if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
 ! heartbeat - if >0 then dump a message every heartbeat iterations
 
 call cgca_clvgp_nocosum( cgca_space, cgca_grt, cgca_stress,            &
-     0.01_rdef * cgca_scrit, cgca_clvgsd, cgca_gcupdn, .false.,        &
-     cgca_clvg_iter, 10, cgca_yesdebug )
+     cgca_scrit_scale * cgca_scrit, cgca_clvgsd, cgca_gcupdn,          &
+     .false., cgca_clvg_iter, 10, cgca_yesdebug )
 
 ! dump the model out, no sync inside (fwci-ASCII,pswci-BINARY)
 IF(j/npri*npri==j) THEN
@@ -985,7 +981,7 @@ END PROGRAM xx20std
 SUBROUTINE READ_DEF(job_name,alpha1,beta1,e,element,     &
                     limit,loaded_nodes,mesh,nels,nip,nn,nod,   &
                     npri,nr,nres,nstep,omega,partitioner,rho,  &
-                    theta,tol,v,dtim,scale)
+                    theta,tol,v,dtim,load_scale,scrit_scale)
 
 USE mpi_wrapper
 USE precision
@@ -998,7 +994,7 @@ CHARACTER(LEN=15), INTENT(INOUT) :: element
 CHARACTER(LEN=50)                :: fname,nullname
 
 REAL(iwp), INTENT(INOUT)         :: rho,e,v,alpha1,beta1,theta,omega
-REAL(iwp), INTENT(INOUT)         :: tol,dtim,scale
+REAL(iwp), INTENT(INOUT)         :: tol,dtim,load_scale,scrit_scale
 
 INTEGER, INTENT(INOUT)           :: nels,nn,nr,nres,nod,nip,loaded_nodes
 INTEGER, INTENT(INOUT)           :: nstep,npri,limit,mesh,partitioner 
@@ -1008,7 +1004,7 @@ INTEGER, INTENT(INOUT)           :: nstep,npri,limit,mesh,partitioner
 !------------------------------------------------------------------------------
 
 INTEGER                          :: integer_store(12)
-REAL(iwp)                        :: real_store(10)
+REAL(iwp)                        :: real_store(11)
 
 !------------------------------------------------------------------------------
 ! 2. Master processor reads the data and copies it into temporary arrays
@@ -1045,7 +1041,8 @@ IF (numpe==1) THEN
     READ(8,*) tol, nullname
     READ(8,*) limit, nullname
     READ(8,*) dtim, nullname
-    READ(8,*) scale, nullname
+    READ(8,*) load_scale, nullname
+    READ(8,*) scrit_scale, nullname
   CLOSE(8)
 
   integer_store      = 0
@@ -1074,7 +1071,8 @@ IF (numpe==1) THEN
   real_store(7)      = omega  
   real_store(8)      = tol 
   real_store(9)      = dtim  
-  real_store(10)     = scale
+  real_store(10)     = load_scale
+  real_store(11)     = scrit_scale
 
 ENDIF
 !------------------------------------------------------------------------------
@@ -1117,8 +1115,8 @@ IF (numpe/=1) THEN
   omega        = real_store(7)
   tol          = real_store(8)
   dtim         = real_store(9)
-  scale        = real_store(10)
-
+  load_scale   = real_store(10)
+  scrit_scale  = real_store(11)
 END IF
 
 RETURN
