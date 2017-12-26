@@ -16,11 +16,12 @@
 0.300000E+00	#-Poissons
 0.000000E+00	#-Alpha1
 0.000000E+00	#-Beta1
-1000		#-nstep
+10000		#-nstep
 10000		#-npri
 0.500000E+00	#-theta
 0.100000E+01	#-Omega
 0.100000E-04	#-tol
 3000		#-limit
-0.0001		#-dtim
-0.0001		#-Scale
+0.00001		#-dtim
+0.01		#-LoadScale
+0.001           #-ScritScale
