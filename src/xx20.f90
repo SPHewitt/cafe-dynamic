@@ -4,7 +4,7 @@ PROGRAM xx20std
 ! Sam Hewitt (University of Manchester)
 ! Anton Shterenlikht (University of Bristol)
 !
-! Program xx20 - linking ParaFEM with CGPACK, specifically
+! Program xx20std- linking ParaFEM with CGPACK, specifically
 ! modifying p129 from 5th edition to link with the cgca module.
 !
 ! 12.9 --
@@ -13,8 +13,7 @@ PROGRAM xx20std
 ! This mainly means none of the routines using Cray extensions
 ! can be used.
 !
-! This is the CRAY Version for The Archer : XC30 Machine.
-!  
+! This version has been tested on Intel 17
 !
 ! The CA CS is aligned with the FE CS, but not the same origin.
 ! Anyway, all cells are within the FE model, so mapping is easy.
@@ -46,14 +45,14 @@ INTEGER,PARAMETER       ::  nodof=3,nst=6
 INTEGER                 ::  nn,nr,nip,nod,i,j,k,l,m,iel,ndim=3,nstep
 INTEGER                 ::  npri,iters,limit,ndof,nels,npes_pp
 INTEGER                 ::  node_end,node_start,nodes_pp,loaded_nodes
-INTEGER                 ::  nlen,nres,meshgen,partitioner,it,is,outProc
+INTEGER                 ::  nlen,nres,meshgen,partitioner,it,is
 INTEGER                 ::  statu(MPI_STATUS_SIZE)
 
 REAL(iwp),PARAMETER     ::  zero=0.0_iwp    
 REAL(iwp)               ::  e,v,det,rho,alpha1,beta1,omega,theta
 REAL(iwp)               ::  period,pi,dtim,volume,c1,c2,c3,c4,q
-REAL(iwp)               ::  real_time,tol,up,alpha,beta
-REAL(iwp)               :: outDisp(3),send,recv,tLoad
+REAL(iwp)               ::  real_time,tol,up,alpha,beta,scale
+REAL(iwp)               ::  outDisp(3),send(3),recv(3),tLoad
      
 CHARACTER(LEN=15)       ::  element
 CHARACTER(LEN=50)       ::  argv
@@ -80,7 +79,7 @@ INTEGER,ALLOCATABLE   ::  rest(:,:),g_num_pp(:,:),g_g_pp(:,:),node(:)
 !*** CGPACK part *****************************************************72
 ! CGPACK parameters
 integer, parameter :: cgca_linum=5 ! number of loading iterations
-logical( kind=ldef ), parameter :: cgca_yesdebug = .false.,             &
+logical( kind=ldef ), parameter :: cgca_yesdebug = .false.,            &
  cgca_nodebug = .false.
 real( kind=rdef ), parameter :: cgca_zero = 0.0_rdef,                  &
  cgca_one = 1.0_rdef,                                                  &
@@ -88,8 +87,8 @@ real( kind=rdef ), parameter :: cgca_zero = 0.0_rdef,                  &
  ! see the manual for derivation, GPa.
  ! Material = Iron
  !cgca_scrit(3) = (/ 1.05e1_rdef, 1.25e1_rdef, 4.90e1_rdef /)
- cgca_scrit(3) = (/ 1.05e6_rdef, 1.25e6_rdef, 4.90e6_rdef /)
-
+ !cgca_scrit(3) = (/ 1.05e3_rdef, 1.25e3_rdef, 4.90e3_rdef /)
+ cgca_scrit(3) = (/ 1.05e4_rdef, 1.25e4_rdef, 4.90e4_rdef /)
 
 ! CGPACK variables
 integer( kind=idef ) ::                                                &
@@ -143,9 +142,16 @@ CALL find_pe_procs(numpe,npes)
 
 CALL getname(argv,nlen)
 
-CALL read_p129(argv,numpe,alpha1,beta1,e,element,limit,loaded_nodes,    &
-   meshgen,nels,nip,nn,nod,npri,nr,nres,nstep,omega,partitioner,rho,     &
-   theta,tol,v)
+! Input file by Hewitt
+! Alternative Read in by Hewitt
+! Easier Read In File (argv.def)
+CALL READ_DEF(argv,alpha1,beta1,e,element,limit,loaded_nodes,           &
+              meshgen,nels,nip,nn,nod,npri,nr,nres,nstep,omega,         &
+              partitioner,rho,theta,tol,v,dtim,scale)
+
+!CALL read_p129(argv,numpe,alpha1,beta1,e,element,limit,loaded_nodes,    &
+!   meshgen,nels,nip,nn,nod,npri,nr,nres,nstep,omega,partitioner,rho,    &
+!   theta,tol,v)
 
 CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
 
@@ -160,7 +166,7 @@ ALLOCATE(rest(nr,nodof+1))
 
 g_num_pp  	=  0
 g_coord_pp	=  zero
-rest		=  0
+rest		    =  0
 
 CALL read_g_num_pp(argv,iel_start,nn,npes,numpe,g_num_pp)
 
@@ -175,7 +181,6 @@ ALLOCATE(points(nip,ndim),bee(nst,ntot),dee(nst,nst),jac(ndim,ndim),     &
    pmul_pp(ntot,nels_pp),store_mm_pp(ntot,ntot,nels_pp),emm(ntot,ntot),  &
    temp_pp(ntot,ntot,nels_pp),diag_precon_tmp(ntot,nels_pp),fun(nod),    &
    eps(nst),sigma(nst))
-
 
 !*** end of ParaFEM input and initialisation *************************72
 
@@ -220,7 +225,8 @@ sync all
 ! xx20 The PARAFEM Model is (0,0,-1) to (1,5,0)
 
 !cgca_bsz = (/ 10.0, 10.0, 10.0 /)
-cgca_bsz = (/ 1.0, 5.0, 1.0 /)
+!cgca_bsz = (/ 1.0, 5.0, 1.0 /)
+cgca_bsz = (/ 1.0, 1.0, 1.0 /)
 
 ! Origin of the box cs, in the same units.
 ! This gives the upper limits of the box at 0+10=10, 0+10=10, -10+10=0
@@ -228,7 +234,8 @@ cgca_bsz = (/ 1.0, 5.0, 1.0 /)
 
 ! xx20 Origin of box is (0,0,-1)
 !cgca_origin = (/ 0.0, 0.0, -10.0 /)
-cgca_origin = (/ 0.0, 0.0, -1.0 /)
+!cgca_origin = (/ 0.0, 0.0, -1.0 /)
+cgca_origin = (/ 0.0, 2.0, -1.0 /)
 
 ! Rotation tensor *from* FE cs *to* CA cs.
 ! The box cs is aligned with the box.
@@ -238,10 +245,11 @@ cgca_rot( 2, 2 ) = 1.0
 cgca_rot( 3, 3 ) = 1.0
 
 ! mean grain size, also mm
-! Beam is of size 1 * 5 * 1 (mm)
+! Beam is of size 1 * 5 * 1
+! From Kato2015 - Iron has grain dimater 0.3 and 0.5 mm
 !cgca_dm = 3.0e0_rdef
 cgca_dm = 0.2e0_rdef ! 625 Grains
-cgca_dm = 0.5e0_rdef ! 40 Grains
+!cgca_dm = 0.5e0_rdef ! 40 Grains
 
 ! resolution, cells per grain
 !cgca_res = 1.0e5_rdef
@@ -255,7 +263,7 @@ cgca_length = 1.0e6_rdef
 ! In p129_tiny, each finite element is 0.125 x 0.125 x 0.125 mm, so
 ! the charlen must be bigger than that.
 
-cgca_charlen = 0.2
+cgca_charlen = 1.0
 
 ! each image calculates the coarray grid dimensions
 call cgca_gdim( cgca_nimgs, cgca_ir, cgca_qual )
@@ -278,7 +286,8 @@ if (cgca_img .eq. 1 ) then
   write (*,"(a, es10.2, a, i0)") "Total cells in the model (real): ",  &
     product( real(cgca_c) * real(cgca_ir) ), " (int): ",               &
     product( int(cgca_c, kind=ilrg) * int(cgca_ir, kind=ilrg) )
-  write(*,"(A,F10.2)")"Critical Stress",cgca_scrit
+  write(*,"(3(a,g0))")"Critical Stress: ",cgca_scrit(1),", ",            &
+          cgca_scrit(2),", ",cgca_scrit(3)
 end if
 
 ! Allocate space coarray with 2 layers, implicit SYNC ALL inside.
@@ -410,17 +419,9 @@ call cgca_gcu( cgca_space )
 if ( cgca_img .eq. 1 ) then
   !cgca_space( 1, 1, cgca_c(3)/2, cgca_state_type_frac )                &
   !            [ 1, 1, cgca_ir(3)/2 ] = cgca_clvg_state_100_edge
-  cgca_space( 1, 50, 1, cgca_state_type_frac )                &
-              [ 1, 1, 1 ] = cgca_clvg_state_100_edge
-
-
+  cgca_space( 1, cgca_c(2)/2, 1, cgca_state_type_frac )                &
+              [ 1, cgca_ir(2)/2, 1 ] = cgca_clvg_state_100_edge
   WRITE(*,*)"Setting crack Nucleus"
-  WRITE(*,*)"cgca_c(:)",cgca_c(:)
-  WRITE(*,*)"cgca_ir(:)",cgca_ir(:)
-
-  ! SET coarray position (1,1,)
-  !! cgca_c = # Cells in space coarray
-  !! cgca_ir= Rearranged Coarray dimensions
 end if
 
 
@@ -447,7 +448,7 @@ call cgca_pfem_ctdalloc
 ! Remote comms, no sync inside, so most likely want to sync afterwards
 if ( cgca_img .eq. 1 ) write (*,*) "dumping model to files"
 !call cgca_fwci( cgca_space, cgca_state_type_grain, "zg0text.raw" )
-call cgca_fwci( cgca_space, cgca_state_type_frac,  "zf0text.raw" )
+!call cgca_fwci( cgca_space, cgca_state_type_frac,  "zf0text.raw" )
 ! HEWITT
 call cgca_pswci( cgca_space, cgca_state_type_grain, "zg0.raw" )
 call cgca_pswci( cgca_space, cgca_state_type_frac,  "zf0.raw" )
@@ -479,6 +480,9 @@ CALL calc_neq_pp
 CALL calc_npes_pp( npes, npes_pp )
 CALL make_ggl( npes_pp, npes, g_g_pp )
 
+! Set to the last equation (z)
+nres=neq
+
 DO i=1,neq_pp
   IF(nres==ieq_start+i-1)THEN
     it=numpe
@@ -505,10 +509,20 @@ ALLOCATE(x0_pp(neq_pp),d1x0_pp(neq_pp),x1_pp(neq_pp),vu_pp(neq_pp),     &
 store_mm_pp=zero
 
 !------ NEW nstep and dtim
-! Omega is in Rad/s
 
+! Set Scale to 1 
+!scale=1.0_iwp
+!dtim=0.001_iwp
+
+
+
+IF(numpe==1)THEN
+  WRITE(*,"(2(A,F10.4))")"Time Step: ", dtim, " Scale: ", scale 
+ENDIF
+
+
+! Omega is in Rad/s
 pi=ACOS(-1._iwp); period=2._iwp*pi/omega; !dtim=period/20._iwp
-dtim=0.001
 
 c1=(1._iwp-theta)*dtim; c2=beta1-c1; c3=alpha1+1._iwp/(theta * dtim)
 c4=beta1+theta*dtim
@@ -567,7 +581,7 @@ IF(numpe==it) THEN
  x0_pp=zero; d1x0_pp=zero; d2x0_pp=zero; real_time=zero
 
   ! Scaling Factor for Force
-  tot_r_pp=tot_r_pp*10
+  tot_r_pp=tot_r_pp * scale
   
   tLoad=SUM_P(tot_r_pp)
   IF(numpe==it) THEN
@@ -584,7 +598,6 @@ timesteps: DO j=1,nstep
   cgca_liter = cgca_liter + 1  !counter for cafe output
 
 !------ element stiffness integration and build the preconditioner ---72
-     
   !HEWITT
   dee = zero
 
@@ -708,7 +721,8 @@ timesteps: DO j=1,nstep
 
 !--------------- recover stresses at centroidal gauss point ------------
 ! IF CAFE
-if(.TRUE. .AND. j .GE. 1500) THEN
+IF(.TRUE. .AND. j .GE. 1500) THEN
+
   CALL gather(xnew_pp(1:),eld_pp)
 
   elmnts: DO iel = 1, nels_pp
@@ -770,8 +784,8 @@ sync all
 
 ! HEWITT
 ! Time Increment for this problem needs researching
+! 0.2 mm/increment approxmiatley (1/5) of the CA domain
 cgca_time_inc = 0.2 * (1.0_rdef / cgca_length)
-!cgca_time_inc=dtim
 
 ! run cleavage for a correct number of iterations, which is a function
 ! of the characteristic length and the time increment
@@ -780,6 +794,12 @@ if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
                                    "clvg iter:", cgca_clvg_iter
 
 ! ===>>> sync all inside <<<===
+! lower the crit stresses by a factor of 100.
+! On Intel 16: no support for CO_SUM yet, so use _nocosum.
+! On Intel 16: subroutine cgca_clvgp_nocosum( coarray, rt, t, scrit, &
+!                     sub, gcus, periodicbc, iter, heartbeat, debug )
+
+
 ! rt - rotation tensor
 ! t  - stress tensor
 ! scrit - critical values of cleavage stress
@@ -791,21 +811,20 @@ if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
 ! iter - # of clevage iterations
 ! heartbeat - if >0 then dump a message every heartbeat iterations
 
-call cgca_clvgp( cgca_space, cgca_grt, cgca_stress,                    &
-     cgca_scrit, cgca_clvgsd, cgca_gcupdn, .false.,                    &
+call cgca_clvgp_nocosum( cgca_space, cgca_grt, cgca_stress,            &
+     0.01_rdef * cgca_scrit, cgca_clvgsd, cgca_gcupdn, .false.,        &
      cgca_clvg_iter, 10, cgca_yesdebug )
 
-! dump the model out, no sync inside
-if ( cgca_img .eq. 1 ) write (*,*) "dumping model to file"
-write ( cgca_citer, "(i0)" ) cgca_liter
-! pswci - Binary, fxci - ASCII
-
-call cgca_pswci( cgca_space, cgca_state_type_frac,                     &
-                "zf"//trim( cgca_citer )//".raw" )
-!call cgca_fwci( cgca_space, cgca_state_type_frac,                     &
-!               "zf"//trim( cgca_citer )//"text.raw" )
-
-if ( cgca_img .eq. 1 ) write (*,*) "finished dumping model to file"
+! dump the model out, no sync inside (fwci-ASCII,pswci-BINARY)
+IF(j/npri*npri==j) THEN
+  if ( cgca_img .eq. 1 ) write (*,*) "dumping model to file"
+  write ( cgca_citer, "(i0)" ) cgca_liter
+  call cgca_pswci( cgca_space, cgca_state_type_frac,                     &
+                  "zf"//trim( cgca_citer )//".raw" )
+  !call cgca_fwci( cgca_space, cgca_state_type_frac,                     &  
+  !                "zf"//trim( cgca_citer )//"text.raw" )
+  if ( cgca_img .eq. 1 ) write (*,*) "finished dumping model to file"
+ENDIF
 
 sync all
      
@@ -843,70 +862,63 @@ sync all
 endif ! CAFE
 !*** end CGPACK part *************************************************72
 
-
 !*** ParaFEM part ****************************************************72
-
-!Find what processor node 12456
-IF(j.EQ.1)THEN
-  DO i = 1,nels_pp
-    DO k =1,nod
-	    if (g_num_pp(k,i) .EQ. 12465)THEN 
-  	  outProc=numpe
-      endif
-    ENDDO
-  ENDDO
-ENDIF 
 
 ! Write Displacements out
 IF(.true.)THEN
-IF(j/npri*npri==j) THEN
-     IF(numpe==it) THEN
-       WRITE(11,'(3E12.4,I10)') real_time,cos(omega*real_time),x1_pp(is),iters
-     ENDIF
-     IF(numpe==1) THEN
-      WRITE(ch,'(I6.6)') j
-       OPEN(12+j,file=argv(1:nlen)//".ensi.DISPL-"//ch,status='replace',   &
-            action='write'); WRITE(12+j,'(A)')                             &
-       "Alya Ensight Gold --- Vector per-node variable file"
-       WRITE(12+j,'(A/A/A)') "part", "     1","coordinates"
-     END IF
-     CALL gather(x1_pp(1:),eld_pp)
-     disp_pp=zero
-     CALL scatter_nodes(npes,nn,nels_pp,g_num_pp,nod,ndim,nodes_pp,        &
-                         node_start,node_end,eld_pp,disp_pp,1)
-     DO i=1,ndim
-      temp=zero
 
+  IF(numpe==it) THEN
+    WRITE(11,'(3E12.4,I10)') real_time,cos(omega*real_time),x1_pp(is),iters
+  ENDIF
+
+  ! Send Displacement of node to Master
+  IF(numpe==it) THEN
+    send=x1_pp(is-2:is)
+    CALL MPI_SEND(send,3,MPI_REAL8,0,0,MPI_COMM_WORLD,ier)
+  END IF
+
+  IF(numpe==1) THEN
+    ! NOTE: recieve processor entered manually
+    CALL MPI_RECV(recv,3,MPI_REAL8,npes-1,0,MPI_COMM_WORLD,statu,ier)
+    outDisp=recv
+  END IF
+
+  IF (numpe==1)THEN
+    IF(j.EQ.1)THEN
+      OPEN(10,FILE='Displacement.dat',STATUS='replace',ACTION='write')
+    ENDIF
+    WRITE(10,'(E12.4,E12.4,3E12.4)') real_time,tLoad,outDisp
+  ENDIF
+
+  !- Write Ensi Files
+  IF(j/npri*npri==j) THEN
+    IF(numpe==1) THEN
+      WRITE(ch,'(I6.6)') j
+      OPEN(12+j,file=argv(1:nlen)//".ensi.DISPL-"//ch,status='replace',   &
+            action='write'); WRITE(12+j,'(A)')                             &
+      "Alya Ensight Gold --- Vector per-node variable file"
+      WRITE(12+j,'(A/A/A)') "part", "     1","coordinates"
+    END IF
+    CALL gather(x1_pp(1:),eld_pp)
+    disp_pp=zero
+    CALL scatter_nodes(npes,nn,nels_pp,g_num_pp,nod,ndim,nodes_pp,        &
+                        node_start,node_end,eld_pp,disp_pp,1)
+    DO i=1,ndim
+      temp=zero
       DO l=1,nodes_pp
         k=i+(ndim*(l-1))
         temp(l)=disp_pp(k)
       END DO
 
-      ! Send Displacement of node to Master
-	    IF(numpe==outProc) THEN
-	      m=12456-node_start
-	      send=temp(m)
-        CALL MPI_SEND(send,1,MPI_REAL8,0,0,MPI_COMM_WORLD,ier)
-      END IF
-
-      IF(numpe==1) THEN
-	      ! NOTE: recieve processor entered manually
-        CALL MPI_RECV(recv,1,MPI_REAL8,7,0,MPI_COMM_WORLD,statu,ier)
-	      outDisp(i)=recv
-      END IF
-
       CALL dismsh_ensi_p(12+j,l,nodes_pp,npes,numpe,1,temp)
-     
-     END DO; IF(numpe==1) CLOSE(12+j)
-   END IF 
-ENDIF
+    
+    END DO
+    
+    IF(numpe==1) CLOSE(12+j)      
+    
+  ENDIF ! IF(j/npri*npri==j) (Ensi Files)
 
-IF (numpe==1)THEN
-  IF(j.EQ.1)THEN
-    OPEN(10,FILE='Displacement.dat',STATUS='replace',ACTION='write')
-  ENDIF
-  WRITE(10,'(E12.4,E12.4,3E12.4)') real_time,tLoad,outDisp
-ENDIF
+ENDIF ! if(.true.)
 
 END DO timesteps
 
@@ -968,3 +980,148 @@ call cgca_pfem_integdalloc
 !*** ParaFEM part ****************************************************72
 !CALL SHUTDOWN() ! cannot call MPI_FINALIZE with coarrays with Intel 16.
 END PROGRAM xx20std
+
+
+SUBROUTINE READ_DEF(job_name,alpha1,beta1,e,element,     &
+                    limit,loaded_nodes,mesh,nels,nip,nn,nod,   &
+                    npri,nr,nres,nstep,omega,partitioner,rho,  &
+                    theta,tol,v,dtim,scale)
+
+USE mpi_wrapper
+USE precision
+USE mp_interface
+
+IMPLICIT none
+
+CHARACTER(LEN=50), INTENT(IN)    :: job_name
+CHARACTER(LEN=15), INTENT(INOUT) :: element
+CHARACTER(LEN=50)                :: fname,nullname
+
+REAL(iwp), INTENT(INOUT)         :: rho,e,v,alpha1,beta1,theta,omega
+REAL(iwp), INTENT(INOUT)         :: tol,dtim,scale
+
+INTEGER, INTENT(INOUT)           :: nels,nn,nr,nres,nod,nip,loaded_nodes
+INTEGER, INTENT(INOUT)           :: nstep,npri,limit,mesh,partitioner 
+
+!------------------------------------------------------------------------------
+! 1. Local variables
+!------------------------------------------------------------------------------
+
+INTEGER                          :: integer_store(12)
+REAL(iwp)                        :: real_store(10)
+
+!------------------------------------------------------------------------------
+! 2. Master processor reads the data and copies it into temporary arrays
+!------------------------------------------------------------------------------
+
+IF (numpe==1) THEN
+  
+  PRINT*,"Reading Definitions File"
+
+  fname = job_name(1:INDEX(job_name, " ") -1)//".def"
+  OPEN(8,FILE=fname,STATUS='OLD',ACTION='READ')
+    READ(8,*)
+    READ(8,*)
+    READ(8,*) element, nullname
+    READ(8,*) mesh, nullname
+    READ(8,*) partitioner, nullname
+    READ(8,*) nels, nullname
+    READ(8,*) nn, nullname
+    READ(8,*) nr, nullname
+    READ(8,*) nip, nullname
+    READ(8,*) nod, nullname
+    READ(8,*) loaded_nodes, nullname
+    READ(8,*) nres, nullname
+    READ(8,*)
+    READ(8,*) rho, nullname
+    READ(8,*) e, nullname
+    READ(8,*) v, nullname
+    READ(8,*) alpha1, nullname
+    READ(8,*) beta1, nullname
+    READ(8,*) nstep, nullname
+    READ(8,*) npri, nullname
+    READ(8,*) theta, nullname
+    READ(8,*) omega, nullname
+    READ(8,*) tol, nullname
+    READ(8,*) limit, nullname
+    READ(8,*) dtim, nullname
+    READ(8,*) scale, nullname
+  CLOSE(8)
+
+  integer_store      = 0
+
+  integer_store(1)   = mesh
+  integer_store(2)   = nels
+  integer_store(3)   = nn
+  integer_store(4)   = nr 
+  integer_store(5)   = nip
+  integer_store(6)   = nod
+  integer_store(7)   = loaded_nodes
+  integer_store(8)   = nstep
+  integer_store(9)   = npri
+  integer_store(10)  = limit
+  integer_store(11)  = partitioner
+  integer_store(12)  = nres
+
+  real_store         = 0.0_iwp
+
+  real_store(1)      = rho  
+  real_store(2)      = e  
+  real_store(3)      = v  
+  real_store(4)      = alpha1  
+  real_store(5)      = beta1  
+  real_store(6)      = theta  
+  real_store(7)      = omega  
+  real_store(8)      = tol 
+  real_store(9)      = dtim  
+  real_store(10)     = scale
+
+ENDIF
+!------------------------------------------------------------------------------
+! 3. Master processor broadcasts the temporary arrays to the slave processors
+!------------------------------------------------------------------------------
+bufsize = 12
+CALL MPI_BCAST(integer_store,bufsize,MPI_INTEGER,0,MPI_COMM_WORLD,ier)
+
+bufsize = 10
+CALL MPI_BCAST(real_store,bufsize,MPI_REAL8,0,MPI_COMM_WORLD,ier)
+
+bufsize = 15
+CALL MPI_BCAST(element,bufsize,MPI_CHARACTER,0,MPI_COMM_WORLD,ier)
+
+!------------------------------------------------------------------------------
+! 4. Slave processors extract the variables from the temporary arrays
+!------------------------------------------------------------------------------
+
+IF (numpe/=1) THEN
+
+  mesh         = integer_store(1)
+  nels         = integer_store(2)
+  nn           = integer_store(3)
+  nr           = integer_store(4)
+  nip          = integer_store(5)
+  nod          = integer_store(6)
+  loaded_nodes = integer_store(7)
+  nstep        = integer_store(8)
+  npri         = integer_store(9)
+  limit        = integer_store(10)
+  partitioner  = integer_store(11)
+  nres         = integer_store(12)
+
+  rho          = real_store(1)
+  e            = real_store(2)
+  v            = real_store(3)
+  alpha1       = real_store(4)
+  beta1        = real_store(5)
+  theta        = real_store(6)
+  omega        = real_store(7)
+  tol          = real_store(8)
+  dtim         = real_store(9)
+  scale        = real_store(10)
+
+END IF
+
+RETURN
+
+ENDSUBROUTINE READ_DEF
+
