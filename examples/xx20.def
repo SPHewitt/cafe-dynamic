@@ -1,0 +1,26 @@
+# Definitions File
+
+'hexahedron' #-Element
+2	#-Mesh
+1	#-Partitioner
+2560	#-nels
+12465	#-nn
+225	#-nr
+27	#-nip
+20	#-nod
+17	#-LoadedNodes
+36720	#-nres
+
+0.787400E-05	#-density
+0.200000E+06	#-YoungsMod
+0.300000E+00	#-Poissons
+0.000000E+00	#-Alpha1
+0.000000E+00	#-Beta1
+1000		#-nstep
+10000		#-npri
+0.500000E+00	#-theta
+0.100000E+01	#-Omega
+0.100000E-04	#-tol
+3000		#-limit
+0.0001		#-dtim
+0.0001		#-Scale
