@@ -1,19 +1,19 @@
 !------------------------------------------------------------------------------
 ! 15. Print out displacements, stress, principal stress and reactions
 !------------------------------------------------------------------------------
-  job_name = "xx20"  
+  job_name = argv  
 
   IF(numpe==1) THEN
     fname = job_name(1:INDEX(job_name, " ")-1)//".dis"
-    OPEN(24, file=fname, status='replace', action='write')
+    OPEN(100+tstep, file=fname, status='replace', action='write')
     fname = job_name(1:INDEX(job_name, " ")-1) // ".str"
-    OPEN(25, file=fname, status='replace', action='write')
+    OPEN(200+tstep, file=fname, status='replace', action='write')
     fname = job_name(1:INDEX(job_name, " ")-1) // ".pri"
-    OPEN(26, file=fname, status='replace', action='write')
+    OPEN(300+tstep, file=fname, status='replace', action='write')
     fname = job_name(1:INDEX(job_name, " ")-1) // ".vms"
-    OPEN(27, file=fname, status='replace', action='write')
+    OPEN(400+tstep, file=fname, status='replace', action='write')
     fname = job_name(1:INDEX(job_name, " ")-1) // ".rea"
-    OPEN(28, file=fname, status='replace', action='write')
+    OPEN(500+tstep, file=fname, status='replace', action='write')
   END IF
 
 !------------------------------------------------------------------------------
@@ -29,10 +29,10 @@
 
   CALL scatter_nodes(npes,nn,nels_pp,g_num_pp,nod,ndim,nodes_pp,              &
                      node_start,node_end,eld_pp,disp_pp,1)
-  CALL write_nodal_variable(label,24,1,nodes_pp,npes,numpe,ndim,disp_pp)
+  CALL write_nodal_variable(label,100+tstep,tstep,nodes_pp,npes,numpe,ndim,disp_pp)
 
 
-  IF(numpe==1) CLOSE(24)
+  IF(numpe==1) CLOSE(100+tstep)
 
 !------------------------------------------------------------------------------
 ! 16b. Stresses
@@ -96,11 +96,11 @@
 
   PRINT*,"Nodal Projection"
   CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
-  CALL write_nodal_variable(label,25,1,nodes_pp,npes,numpe,nst,               &
+  CALL write_nodal_variable(label,200+tstep,tstep,nodes_pp,npes,numpe,nst,               &
                             stressnodes_pp)
                             
 
-  IF(numpe==1) CLOSE(25)
+  IF(numpe==1) CLOSE(200+tstep)
 
 !------------------------------------------------------------------------------
 ! 16d. Principal stress
@@ -112,10 +112,10 @@
                         node_start,node_end,shape_integral_pp,                &
                         principal_integral_pp,princinodes_pp)
 
-  CALL write_nodal_variable(label,26,1,nodes_pp,npes,numpe,nodof,             &
+  CALL write_nodal_variable(label,300+tstep,tstep,nodes_pp,npes,numpe,nodof,             &
                             princinodes_pp)
 
-  IF(numpe==1) CLOSE(26)
+  IF(numpe==1) CLOSE(300+tstep)
 
 !------------------------------------------------------------------------------
 ! 16e. Von Mises stress (rho_v)
@@ -135,10 +135,10 @@
     princinodes_pp(kk:ll) = zero
   END DO
 
-  CALL write_nodal_variable(label,27,1,nodes_pp,npes,numpe,nodof,             &
+  CALL write_nodal_variable(label,400+tstep,tstep,nodes_pp,npes,numpe,nodof,             &
                             princinodes_pp)
 
-  IF(numpe==1) CLOSE(27)
+  IF(numpe==1) CLOSE(400+tstep)
 
 !------------------------------------------------------------------------------
 ! 16f. Reactions
@@ -147,7 +147,9 @@
   label = "*NODAL REACTIONS"
   CALL scatter_nodes(npes,nn,nels_pp,g_num_pp,nod,nodof,nodes_pp,             &
                      node_start,node_end,utemp_pp,reacnodes_pp,0)
-  CALL write_nodal_variable(label,28,1,nodes_pp,npes,numpe,nodof,             &
+  CALL write_nodal_variable(label,500+tstep,tstep,nodes_pp,npes,numpe,nodof,             &
                             reacnodes_pp)
 
-  IF(numpe==1) CLOSE(28)
+  IF(numpe==1) CLOSE(500+tstep)
+
+

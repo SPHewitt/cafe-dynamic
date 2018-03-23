@@ -5,7 +5,7 @@ PROGRAM xx20std
 ! Anton Shterenlikht (University of Bristol)
 ! Lee Margetts (University of Manchester)
 !
-! Program xx20- linking ParaFEM with CGPACK, specifically
+! Program xx20- linking ParaFEM with CASUP, specifically
 ! modifying p129 from 5th edition to link with the cgca modules.
 !
 !
@@ -46,7 +46,7 @@ INTEGER                 ::  nn,nr,nip,nod,i,j,k,l,m,iel,ndim=3,nstep
 INTEGER                 ::  npri,iters,limit,ndof,nels,npes_pp
 INTEGER                 ::  node_end,node_start,nodes_pp,loaded_nodes
 INTEGER                 ::  nlen,nres,meshgen,partitioner,it,is
-INTEGER                 ::  statu(MPI_STATUS_SIZE)
+INTEGER                 ::  statu(MPI_STATUS_SIZE),tstep
 INTEGER                 ::  ii,jj,kk,ll,mm,idx1,idx2
 
 REAL(iwp),PARAMETER     ::  zero=0.0_iwp    
@@ -618,7 +618,7 @@ IF(numpe==it) THEN
 !---------------------------- time stepping loop ------------------------- 
 !-------------------------------------------------------------------------
 cgca_liter=1
-timesteps: DO j=1,nstep
+timesteps: DO tstep=1,nstep
   cgca_liter = cgca_liter + 1  !counter for cafe output
 
 !------ element stiffness integration and build the preconditioner ---72
@@ -683,7 +683,7 @@ timesteps: DO j=1,nstep
 !----------------------------- RHS and loading --------------------------
   real_time=real_time+dtim;
   r_pp = zero
-  IF(j .eq. 1)THEN
+  IF(tstep .eq. 1)THEN
     r_pp = tot_r_pp
 	!tot_r_pp (theta*dtim*cos(omega*real_time)+c1*                 &
                     !      cos(omega*(real_time-dtim)))
@@ -695,7 +695,7 @@ timesteps: DO j=1,nstep
     q = SUM_P( r_pp )
     tLoad=q
     IF ( numpe==it ) then
-      write (*, '(A,I12,A,F10.3)') "Time Step:", j," Real Time:",real_time
+      write (*, '(A,I12,A,F10.3)') "Time Step:", tstep," Real Time:",real_time
       write (*,'(A,E12.4)') "The total load is:", q
     END IF
   END IF
@@ -750,7 +750,7 @@ timesteps: DO j=1,nstep
 ! IF CAFE
 ! Manual Input
 
-IF(.TRUE. .AND. j .GE. crack_start) THEN
+IF(.TRUE. .AND. tstep .GE. crack_start) THEN
 
   CALL gather(xnew_pp(1:),eld_pp)
 
@@ -847,7 +847,7 @@ call cgca_clvgp_nocosum( cgca_space, cgca_grt, cgca_stress,            &
      .false., cgca_clvg_iter, 10, cgca_yesdebug )
 
 ! dump the model out, no sync inside (fwci-ASCII,pswci-BINARY)
-IF(j/npri*npri==j) THEN
+IF(tstep/npri*npri==tstep) THEN
   if ( cgca_img .eq. 1 ) write (*,*) "dumping model to file"
   write ( cgca_citer, "(i0)" ) cgca_liter
   call cgca_pswci( cgca_space, cgca_state_type_frac,                     &
@@ -896,74 +896,22 @@ endif ! CAFE
 ! Write Displacements out
 IF(.true.)THEN
 
-  IF(numpe==it) THEN
-    WRITE(11,'(3E12.4,I10)') real_time,cos(omega*real_time),x1_pp(is),iters
-  ENDIF
+  ! Write the displacement at a single node to file
+  INCLUDE 'node_displacement.f90'
 
-  ! Send Displacement of node to Master
-  IF(numpe==it) THEN
-    send=x1_pp(is-2:is)
-    CALL MPI_SEND(send,3,MPI_REAL8,0,0,MPI_COMM_WORLD,ier)
-  END IF
+  !- Write data files
+!  IF(tstep .GE. 100)THEN
+    IF(tstep/npri*npri==tstep) THEN
+      INCLUDE 'write_data_files.f90' 
+    ENDIF ! IF(tstep/npri*npri==tstep) (Ensi Files) 
+! ENDIF ! IF tstep .GE. crack_start
 
-  IF(numpe==1) THEN
-    ! NOTE: recieve processor entered manually
-    CALL MPI_RECV(recv,3,MPI_REAL8,npes-1,0,MPI_COMM_WORLD,statu,ier)
-    outDisp=recv
-  END IF
-
-  IF (numpe==1)THEN
-    IF(j.EQ.1)THEN
-      OPEN(10,FILE='Displacement.dat',STATUS='replace',ACTION='write')
-    ENDIF
-    WRITE(10,'(E12.4,E12.4,3E12.4)') real_time,tLoad,outDisp
-  ENDIF
-
-  !- Write Ensi Files
-!  IF(j .GE. 100)THEN
-  IF(j/npri*npri==j) THEN
-
-
-    PRINT*,"Writing Data"
-    INCLUDE 'writedata.f90' 
-    PRINT*,"Completed WRITE"
-    IF(numpe==1) THEN
-
-         !INCLUDE 'writedata.f90'
-
-     WRITE(ch,'(I6.6)') j
-      OPEN(12+j,file=argv(1:nlen)//".ensi.DISPL-"//ch,status='replace',   &
-            action='write'); WRITE(12+j,'(A)')                             &
-      "Alya Ensight Gold --- Vector per-node variable file"
-      WRITE(12+j,'(A/A/A)') "part", "     1","coordinates"
-    END IF
-    CALL gather(x1_pp(1:),eld_pp)
-    disp_pp=zero
-    CALL scatter_nodes(npes,nn,nels_pp,g_num_pp,nod,ndim,nodes_pp,        &
-                        node_start,node_end,eld_pp,disp_pp,1)
-    DO i=1,ndim
-      temp=zero
-      DO l=1,nodes_pp
-        k=i+(ndim*(l-1))
-        temp(l)=disp_pp(k)
-      END DO
-
-      CALL dismsh_ensi_p(12+j,l,nodes_pp,npes,numpe,1,temp)
-    
-    END DO
-    
-    IF(numpe==1) CLOSE(12+j)      
-    
-  ENDIF ! IF(j/npri*npri==j) (Ensi Files)
-  
-! ENDIF ! IF j .GE. crack_start
-
-ENDIF ! if(.true.)
+ENDIF
 
 exit_flag = ABS(outDisp(3))
 CALL MPI_BCAST(exit_flag,1,MPI_REAL8,0,MPI_COMM_WORLD,ier)
 
-!PRINT*,numpe,":",exit_flag
+! Check for program exit
 ! Note outDisp(3) -> Z
 IF( exit_flag .GE. exit_disp) THEN
   IF(numpe == 1)THEN    
@@ -992,31 +940,6 @@ DEALLOCATE(principal_integral_pp)
                    
 DEALLOCATE(princinodes_pp)
 DEALLOCATE(reacnodes_pp,shape_integral_pp)
-
-!------------------------ write out displacements ----------------------
-
-  !CALL calc_nodes_pp(nn,npes,numpe,node_end,node_start,nodes_pp)
-
-  !IF ( numpe==1 ) THEN
-  !   write(ch,'(I6.6)') numpe
-  !   open( 12, file=argv(1:nlen)//".ensi.DISPL-"//ch,status='replace',    &
-  !        action='write')
-  !  write(12,'(A)') "Alya Ensight Gold --- Vector per-node variable file"
-  !   write(12,'(A/A/A)') "part", "     1","coordinates"
-  !END IF
-
- ! ALLOCATE( disp_pp(nodes_pp*ndim), source=zero )
- ! allocate( temp(nodes_pp), source=zero )
-  !CALL scatter_nodes( npes, nn, nels_pp, g_num_pp, nod, ndim, nodes_pp,  &
-  !     node_start, node_end, eld_pp, disp_pp, 1 )
-  !DO i=1,ndim
-  !   temp=zero
-  !   DO j=1,nodes_pp
-  !      k = i+(ndim*(j-1))
-  !      temp(j) = disp_pp(k)
-  !   END DO
-  !   CALL dismsh_ensi_p(12,1,nodes_pp,npes,numpe,1,temp)
-  !END DO
 
   IF ( numpe==it ) then
      write( 11, '(A,F10.4)') "This analysis took: ", elap_time()-timest(1)
