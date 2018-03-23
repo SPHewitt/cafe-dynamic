@@ -3,11 +3,11 @@ PROGRAM xx20std
 !-----------------------------------------------------------------------
 ! Sam Hewitt (University of Manchester)
 ! Anton Shterenlikht (University of Bristol)
+! Lee Margetts (University of Manchester)
 !
-! Program xx20std- linking ParaFEM with CGPACK, specifically
-! modifying p129 from 5th edition to link with the cgca module.
+! Program xx20- linking ParaFEM with CGPACK, specifically
+! modifying p129 from 5th edition to link with the cgca modules.
 !
-! 12.9 --
 !
 ! This version must conform to F2008 standard.
 ! This mainly means none of the routines using Cray extensions
@@ -47,19 +47,24 @@ INTEGER                 ::  npri,iters,limit,ndof,nels,npes_pp
 INTEGER                 ::  node_end,node_start,nodes_pp,loaded_nodes
 INTEGER                 ::  nlen,nres,meshgen,partitioner,it,is
 INTEGER                 ::  statu(MPI_STATUS_SIZE)
+INTEGER                 ::  ii,jj,kk,ll,mm,idx1,idx2
 
 REAL(iwp),PARAMETER     ::  zero=0.0_iwp    
 REAL(iwp)               ::  e,v,det,rho,alpha1,beta1,omega,theta
 REAL(iwp)               ::  period,pi,dtim,volume,c1,c2,c3,c4,q
-REAL(iwp)               ::  real_time,tol,up,alpha,beta,scale
+REAL(iwp)               ::  real_time,tol,up,alpha,beta,ld_scale
 REAL(iwp)               ::  outDisp(3),send(3),recv(3),tLoad
-REAL(iwp)               ::  scrit_scale
+REAL(iwp)               ::  scrit_scale,crack_start,exit_disp
+REAL(iwp)               ::  exit_flag
 
 CHARACTER(LEN=15)       ::  element
 CHARACTER(LEN=50)       ::  argv
 CHARACTER(LEN=6)        ::  ch
 
-LOGICAL                 ::consistent=.TRUE.,converged
+! NEW
+CHARACTER(LEN=50)       ::  fname,job_name,label
+
+LOGICAL                 ::  consistent=.TRUE.,converged
 
 !---------------------------- dynamic arrays -------------------------72
 REAL(iwp),ALLOCATABLE ::  loads_pp(:),points(:,:),dee(:,:),fun(:)
@@ -75,7 +80,11 @@ REAL(iwp),ALLOCATABLE ::  diag_precon_tmp(:,:),temp_pp(:,:,:)
 REAL(iwp),ALLOCATABLE ::  disp_pp(:),val(:,:),timest(:),eld_pp(:,:)
 REAL(iwp),ALLOCATABLE ::  r_pp(:),tot_r_pp(:),eps(:),sigma(:)
 
-INTEGER,ALLOCATABLE   ::  rest(:,:),g_num_pp(:,:),g_g_pp(:,:),node(:)    
+REAL(iwp),ALLOCATABLE :: stress_integral_pp(:,:),stressnodes_pp(:)
+REAL(iwp),ALLOCATABLE :: principal_integral_pp(:,:),princinodes_pp(:)
+REAL(iwp),ALLOCATABLE :: principal(:),reacnodes_pp(:),shape_integral_pp(:,:)
+
+INTEGER,ALLOCATABLE   :: rest(:,:),g_num_pp(:,:),g_g_pp(:,:),node(:)    
 
 !*** CGPACK part *****************************************************72
 ! CGPACK parameters
@@ -87,8 +96,6 @@ real( kind=rdef ), parameter :: cgca_zero = 0.0_rdef,                  &
  ! cleavage stress on 100, 110, 111 planes for BCC,
  ! see the manual for derivation, GPa.
  ! Material = Iron
- !cgca_scrit(3) = (/ 1.05e1_rdef, 1.25e1_rdef, 4.90e1_rdef /)
- !cgca_scrit(3) = (/ 1.05e3_rdef, 1.25e3_rdef, 4.90e3_rdef /)
  cgca_scrit(3) = (/ 1.05e4_rdef, 1.25e4_rdef, 4.90e4_rdef /)
 
 ! CGPACK variables
@@ -131,8 +138,8 @@ character( len=6 ) :: cgca_citer
 
 !------------------------ input and initialisation ---------------------
 ALLOCATE(timest(20))
-timest  	=  zero
-timest(1)	=  elap_time()
+timest     =  zero
+timest(1)  =  elap_time()
 
 !*    Get the rank of the processes and the total number of processes
 !* intent( out ):
@@ -144,12 +151,11 @@ CALL find_pe_procs(numpe,npes)
 
 CALL getname(argv,nlen)
 
-! Input file by Hewitt
-! Alternative Read in by Hewitt
-! Easier Read In File (argv.def)
+! Input file .def replaces read_p129
 CALL READ_DEF(argv,alpha1,beta1,e,element,limit,loaded_nodes,           &
               meshgen,nels,nip,nn,nod,npri,nr,nres,nstep,omega,         &
-              partitioner,rho,theta,tol,v,dtim,scale,scrit_scale)
+              partitioner,rho,theta,tol,v,dtim,ld_scale,scrit_scale,       &
+              crack_start,exit_disp)
 
 cgca_scrit_scale=scrit_scale
 
@@ -168,9 +174,9 @@ ALLOCATE(g_coord_pp(nod,ndim,nels_pp))
 ALLOCATE(g_num_pp(nod,nels_pp))
 ALLOCATE(rest(nr,nodof+1))
 
-g_num_pp  	=  0
-g_coord_pp	=  zero
-rest		    =  0
+g_num_pp    =  0
+g_coord_pp  =  zero
+rest        =  0
 
 CALL read_g_num_pp(argv,iel_start,nn,npes,numpe,g_num_pp)
 
@@ -185,6 +191,15 @@ ALLOCATE(points(nip,ndim),bee(nst,ntot),dee(nst,nst),jac(ndim,ndim),     &
    pmul_pp(ntot,nels_pp),store_mm_pp(ntot,ntot,nels_pp),emm(ntot,ntot),  &
    temp_pp(ntot,ntot,nels_pp),diag_precon_tmp(ntot,nels_pp),fun(nod),    &
    eps(nst),sigma(nst))
+
+  ALLOCATE(shape_integral_pp(nod,nels_pp))
+  ALLOCATE(stress_integral_pp(nod*nst,nels_pp))
+  ALLOCATE(stressnodes_pp(nodes_pp*nst))
+  ALLOCATE(principal_integral_pp(nod*nodof,nels_pp))
+  ALLOCATE(princinodes_pp(nodes_pp*nodof))
+  ALLOCATE(reacnodes_pp(nodes_pp*nodof))
+  ALLOCATE(principal(ndim))
+
 
 !*** end of ParaFEM input and initialisation *************************72
 
@@ -216,6 +231,7 @@ if ( cgca_img .eq. 1 ) then
   call cgca_pdmp
   write (*,*) "Young's mod:", e, "Poisson's ratio", v
 end if
+
 
 ! Try to separate stdout output
 sync all
@@ -251,23 +267,20 @@ cgca_rot( 3, 3 ) = 1.0
 ! mean grain size, also mm
 ! Beam is of size 1 * 5 * 1
 ! From Kato2015 - Iron has grain dimater 0.3 and 0.5 mm
-!cgca_dm = 3.0e0_rdef
-cgca_dm = 0.2e0_rdef ! 625 Grains
-!cgca_dm = 0.5e0_rdef ! 40 Grains
+ cgca_dm = 0.2e0_rdef
 
 ! resolution, cells per grain
-!cgca_res = 1.0e5_rdef
-cgca_res = 1.0e5_rdef
+  cgca_res = 1.0e3_rdef
 
 ! cgpack length scale, also in mm
 ! Equivalent to crack propagation distance per unit of time,
 ! i.e. per second. Let's say 1 km/s = 1.0e3 m/s = 1.0e6 mm/s. 
-cgca_length = 1.0e6_rdef
+ cgca_length = 1.0e6_rdef
 
 ! In p129_tiny, each finite element is 0.125 x 0.125 x 0.125 mm, so
 ! the charlen must be bigger than that.
 
-cgca_charlen = 1.0
+ cgca_charlen = 0.4
 
 ! each image calculates the coarray grid dimensions
 call cgca_gdim( cgca_nimgs, cgca_ir, cgca_qual )
@@ -417,16 +430,32 @@ sync all
 call cgca_gcu( cgca_space )
 
 
+
 ! IF CRACK
 ! Set a single crack nucleus in the centre of the x1=x2=0 edge
 ! 
 if ( cgca_img .eq. 1 ) then
-  !cgca_space( 1, 1, cgca_c(3)/2, cgca_state_type_frac )                &
-  !            [ 1, 1, cgca_ir(3)/2 ] = cgca_clvg_state_100_edge
-  cgca_space( 1, cgca_c(2)/2, 1, cgca_state_type_frac )                &
-              [ 1, cgca_ir(2)/2, 1 ] = cgca_clvg_state_100_edge
-  WRITE(*,*)"Setting crack Nucleus"
+   WRITE(*,*)"Setting crack Nucleus"
+
+!  cgca_space( 1, 1, cgca_c(3)/2, cgca_state_type_frac )                &
+!              [ 1, 1, cgca_ir(3)/2 ] = cgca_clvg_state_100_edge
+
+! set a crack nucleus in the centre of the x3=max(x3) face
+! cgca_space( cgca_c(1)/2, cgca_c(2)/2, cgca_c(3), cgca_state_type_frac )  &
+!        [ cgca_ir(1)/2+1, cgca_ir(2)/2+1, cgca_ir(3) ] = cgca_clvg_state_100_edge
+
+! set a crack nucleus in the centre of the x3=1 face
+! cgca_space( cgca_c(1)/2, cgca_c(2)/2, 1, cgca_state_type_frac )  &
+!        [ cgca_ir(1)/2+1, cgca_ir(2)/2+1, 1 ] = cgca_clvg_state_100_edge
+
+! set a crack nucleus in the centre of the domain
+ !! cgca_space( cgca_c(1)/2, cgca_c(2)/2, cgca_c(3)/2, cgca_state_type_frac )  &
+ !!       [ int(cgca_ir(1)/2), int(cgca_ir(2)/2), int(cgca_ir(3)/2) ] = cgca_clvg_state_100_edge
+
 end if
+
+
+
 
 
 ! Must be slightly bigger than the characteristic length of FE.
@@ -471,7 +500,7 @@ sync all
 !----------  find the steering array and equations per process ---------
 CALL rearrange(rest)
 g_g_pp  = 0
-neq 	  = 0
+neq     = 0
 
 ! map equations to elements
 elements_0: DO iel=1,nels_pp
@@ -506,14 +535,14 @@ ALLOCATE(x0_pp(neq_pp),d1x0_pp(neq_pp),x1_pp(neq_pp),vu_pp(neq_pp),     &
    x0_pp=zero; d1x0_pp=zero; x1_pp=zero; vu_pp=zero; diag_precon_pp=zero
    u_pp=zero; d2x0_pp=zero; loads_pp=zero; d1x1_pp=zero; d2x1_pp=zero
    d_pp=zero; p_pp=zero; x_pp=zero; xnew_pp=zero; fext_pp=zero 
-   r_pp=zero; tot_r_pp=zero ; disp_pp	= zero ; eld_pp = zero
+   r_pp=zero; tot_r_pp=zero ; disp_pp=zero ; eld_pp=zero
    temp = 0
 
 !---------------------------- Calculate Mass Matrix -------------------------
 store_mm_pp=zero
 
 IF(numpe==1)THEN
-  WRITE(*,"(2(A,F10.4))")"Time Step: ", dtim, " Scale: ", scale 
+  WRITE(*,"(2(A,F10.5))")"Time Step: ", dtim, " Scale: ", ld_scale 
 ENDIF
 
 ! Omega is in Rad/s
@@ -561,11 +590,11 @@ IF ( loaded_nodes > 0 ) THEN
   DEALLOCATE(g_g_pp)
 
 IF(numpe==it) THEN
- 	OPEN(11,FILE=argv(1:nlen)//".res",STATUS='REPLACE',ACTION='WRITE')
-  	WRITE(11,'(A,I6,A)') "This job ran on ",npes," processes"
-   	WRITE(11,'(A,3(I12,A))') "There are ",nn," nodes ",nr,                &
+     OPEN(11,FILE=argv(1:nlen)//".res",STATUS='REPLACE',ACTION='WRITE')
+       WRITE(11,'(A,I6,A)') "This job ran on ",npes," processes"
+       WRITE(11,'(A,3(I12,A))') "There are ",nn," nodes ",nr,                &
      " restrained and ", neq," equations"
-    WRITE(11,'(3(A,F10.2))') " Youngs Modulus",e," Poissons Ratio",v,                &
+    WRITE(11,'(A,E12.4,2(A,F10.2))') " Youngs Modulus",e," Poissons Ratio",v,                &
      " Density", rho
     WRITE(11,'(4(A,F10.2))') "Alpha1",alpha1," Beta1",beta1,                &
     " Omega", omega," Theta",theta
@@ -576,7 +605,7 @@ IF(numpe==it) THEN
  x0_pp=zero; d1x0_pp=zero; d2x0_pp=zero; real_time=zero
 
   ! Scaling Factor for Force
-  tot_r_pp=tot_r_pp * scale
+  tot_r_pp=tot_r_pp * ld_scale
   
   tLoad=SUM_P(tot_r_pp)
   IF(numpe==it) THEN
@@ -599,21 +628,19 @@ timesteps: DO j=1,nstep
   CALL sample( element, points, weights )
   store_km_pp = zero ;
 
-  ! Caluclate Updated Stiffness Matrix
+  ! Calculate Updated Stiffness Matrix
   elements_2a: DO iel=1,nels_pp
     gauss_pts_1: DO i=1,nip
       ! from cgca_m3pfem.f90:
       ! allocate( cgca_pfem_enew( nip, nels_pp ) )
-      ! HEWITT
       CALL deemat( dee, cgca_pfem_enew(i,iel), v )
-      !CALL deemat( dee, e, v )
       CALL shape_der( der, points, i )
       jac = MATMUL( der, g_coord_pp(:,:,iel) )
       det = determinant(jac)
       CALL invert(jac)
       deriv = MATMUL( jac, der )
       CALL beemat( bee, deriv )
-      store_km_pp(:,:,iel) = store_km_pp(:,:,iel) +                             &
+      store_km_pp(:,:,iel) = store_km_pp(:,:,iel) +                    &
       MATMUL( MATMUL( TRANSPOSE(bee), dee ), bee ) * det * weights(i)
     END DO gauss_pts_1
   END DO elements_2a
@@ -623,8 +650,8 @@ timesteps: DO j=1,nstep
 
   elements_2b: DO iel=1,nels_pp
     DO k=1,ntot
-      diag_precon_tmp(k,iel) = diag_precon_tmp(k,iel)			& 
-	  	+ store_mm_pp(k,k,iel)*c3+store_km_pp(k,k,iel)*c4
+      diag_precon_tmp(k,iel) = diag_precon_tmp(k,iel)                  & 
+               + store_mm_pp(k,k,iel)*c3+store_km_pp(k,k,iel)*c4
     END DO
   END DO elements_2b
 
@@ -656,9 +683,14 @@ timesteps: DO j=1,nstep
 !----------------------------- RHS and loading --------------------------
   real_time=real_time+dtim;
   r_pp = zero
-  r_pp = tot_r_pp * (theta*dtim*cos(omega*real_time)+c1*                 &
-                           cos(omega*(real_time-dtim)))
- 
+  IF(j .eq. 1)THEN
+    r_pp = tot_r_pp
+	!tot_r_pp (theta*dtim*cos(omega*real_time)+c1*                 &
+                    !      cos(omega*(real_time-dtim)))
+  ELSE
+    r_pp = zero
+  ENDIF
+
   IF ( loaded_nodes > 0 ) THEN
     q = SUM_P( r_pp )
     tLoad=q
@@ -717,14 +749,14 @@ timesteps: DO j=1,nstep
 !--------------- recover stresses at centroidal gauss point ------------
 ! IF CAFE
 ! Manual Input
-IF(.TRUE. .AND. j .GE. 200) THEN
+
+IF(.TRUE. .AND. j .GE. crack_start) THEN
 
   CALL gather(xnew_pp(1:),eld_pp)
 
   elmnts: DO iel = 1, nels_pp
     intpts: DO i = 1, nip
-      !    call deemat(dee, cgca_pfem_enew( i, iel ), v)
-      call deemat(dee, e, v)
+      call deemat(dee, cgca_pfem_enew( i, iel ), v)
       ! Compute the derivatives of the shape functions at a Gauss point.
       ! http://parafem.googlecode.com/svn/trunk/parafem/src/modules/shared/new_library.f90
       CALL shape_der(der,points,i)
@@ -780,12 +812,15 @@ sync all
 
 ! HEWITT
 ! Time Increment for this problem needs researching
-! 0.2 mm/increment approxmiatley (1/5) of the CA domain
-cgca_time_inc = 0.2 * (1.0_rdef / cgca_length)
+! 0.02 mm/increment approxmiatley (1/50) of the CA domain
+ cgca_time_inc = dtim * 1.0_rdef !*(1.0_rdef / cgca_length)
 
 ! run cleavage for a correct number of iterations, which is a function
 ! of the characteristic length and the time increment
-cgca_clvg_iter = nint( cgca_length * cgca_lres * cgca_time_inc )
+ cgca_clvg_iter = nint( cgca_length * cgca_lres * cgca_time_inc )
+
+if (cgca_clvg_iter .LE. 0) cgca_clvg_iter=1
+
 if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
                                    "clvg iter:", cgca_clvg_iter
 
@@ -845,10 +880,8 @@ sync all
 ! Young's modulus need to be updated on each image, local arrays only.
 ! The original Young's modulus value must be given as input.
 ! For each FE stored on this image.
-!HEWITT
 call cgca_pfem_uym( e, nels_pp )
 
-!HEWITT
 ! dump updated Young's modulus
 write (*,*) "img:", cgca_img, "*min* Young's mod:",                    &
             minval( cgca_pfem_enew )
@@ -887,9 +920,18 @@ IF(.true.)THEN
   ENDIF
 
   !- Write Ensi Files
+!  IF(j .GE. 100)THEN
   IF(j/npri*npri==j) THEN
+
+
+    PRINT*,"Writing Data"
+    INCLUDE 'writedata.f90' 
+    PRINT*,"Completed WRITE"
     IF(numpe==1) THEN
-      WRITE(ch,'(I6.6)') j
+
+         !INCLUDE 'writedata.f90'
+
+     WRITE(ch,'(I6.6)') j
       OPEN(12+j,file=argv(1:nlen)//".ensi.DISPL-"//ch,status='replace',   &
             action='write'); WRITE(12+j,'(A)')                             &
       "Alya Ensight Gold --- Vector per-node variable file"
@@ -913,8 +955,23 @@ IF(.true.)THEN
     IF(numpe==1) CLOSE(12+j)      
     
   ENDIF ! IF(j/npri*npri==j) (Ensi Files)
+  
+! ENDIF ! IF j .GE. crack_start
 
 ENDIF ! if(.true.)
+
+exit_flag = ABS(outDisp(3))
+CALL MPI_BCAST(exit_flag,1,MPI_REAL8,0,MPI_COMM_WORLD,ier)
+
+!PRINT*,numpe,":",exit_flag
+! Note outDisp(3) -> Z
+IF( exit_flag .GE. exit_disp) THEN
+  IF(numpe == 1)THEN    
+    WRITE(*,*) "Displacement Exceeded specified Value"
+    WRITE(*,*) "Ending Time Loop"
+  ENDIF
+  EXIT
+ENDIF
 
 END DO timesteps
 
@@ -930,9 +987,15 @@ deallocate( pmul_pp )
 DEALLOCATE( xnew_pp )
 DEALLOCATE( g_coord_pp )
 
+DEALLOCATE(stress_integral_pp,stressnodes_pp)                        
+DEALLOCATE(principal_integral_pp)
+                   
+DEALLOCATE(princinodes_pp)
+DEALLOCATE(reacnodes_pp,shape_integral_pp)
+
 !------------------------ write out displacements ----------------------
 
-  CALL calc_nodes_pp(nn,npes,numpe,node_end,node_start,nodes_pp)
+  !CALL calc_nodes_pp(nn,npes,numpe,node_end,node_start,nodes_pp)
 
   !IF ( numpe==1 ) THEN
   !   write(ch,'(I6.6)') numpe
@@ -978,10 +1041,11 @@ call cgca_pfem_integdalloc
 END PROGRAM xx20std
 
 
-SUBROUTINE READ_DEF(job_name,alpha1,beta1,e,element,     &
+SUBROUTINE READ_DEF(job_name,alpha1,beta1,e,element,           &
                     limit,loaded_nodes,mesh,nels,nip,nn,nod,   &
                     npri,nr,nres,nstep,omega,partitioner,rho,  &
-                    theta,tol,v,dtim,load_scale,scrit_scale)
+                    theta,tol,v,dtim,load_scale,scrit_scale,   & 
+                    crack_start,exit_disp)
 
 USE mpi_wrapper
 USE precision
@@ -995,6 +1059,7 @@ CHARACTER(LEN=50)                :: fname,nullname
 
 REAL(iwp), INTENT(INOUT)         :: rho,e,v,alpha1,beta1,theta,omega
 REAL(iwp), INTENT(INOUT)         :: tol,dtim,load_scale,scrit_scale
+REAL(iwp), INTENT(INOUT)         :: crack_start,exit_disp
 
 INTEGER, INTENT(INOUT)           :: nels,nn,nr,nres,nod,nip,loaded_nodes
 INTEGER, INTENT(INOUT)           :: nstep,npri,limit,mesh,partitioner 
@@ -1004,7 +1069,7 @@ INTEGER, INTENT(INOUT)           :: nstep,npri,limit,mesh,partitioner
 !------------------------------------------------------------------------------
 
 INTEGER                          :: integer_store(12)
-REAL(iwp)                        :: real_store(11)
+REAL(iwp)                        :: real_store(13)
 
 !------------------------------------------------------------------------------
 ! 2. Master processor reads the data and copies it into temporary arrays
@@ -1043,6 +1108,8 @@ IF (numpe==1) THEN
     READ(8,*) dtim, nullname
     READ(8,*) load_scale, nullname
     READ(8,*) scrit_scale, nullname
+    READ(8,*) crack_start, nullname
+    READ(8,*) exit_disp, nullname
   CLOSE(8)
 
   integer_store      = 0
@@ -1073,6 +1140,8 @@ IF (numpe==1) THEN
   real_store(9)      = dtim  
   real_store(10)     = load_scale
   real_store(11)     = scrit_scale
+  real_store(12)     = crack_start
+  real_store(13)     = exit_disp
 
 ENDIF
 !------------------------------------------------------------------------------
@@ -1081,7 +1150,7 @@ ENDIF
 bufsize = 12
 CALL MPI_BCAST(integer_store,bufsize,MPI_INTEGER,0,MPI_COMM_WORLD,ier)
 
-bufsize = 10
+bufsize = 13
 CALL MPI_BCAST(real_store,bufsize,MPI_REAL8,0,MPI_COMM_WORLD,ier)
 
 bufsize = 15
@@ -1117,6 +1186,9 @@ IF (numpe/=1) THEN
   dtim         = real_store(9)
   load_scale   = real_store(10)
   scrit_scale  = real_store(11)
+  crack_start  = real_store(12)
+  exit_disp    = real_store(13)
+
 END IF
 
 RETURN
