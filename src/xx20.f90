@@ -47,7 +47,7 @@ INTEGER                 ::  npri,iters,limit,ndof,nels,npes_pp
 INTEGER                 ::  node_end,node_start,nodes_pp,loaded_nodes
 INTEGER                 ::  nlen,nres,meshgen,partitioner,it,is
 INTEGER                 ::  statu(MPI_STATUS_SIZE),tstep
-INTEGER                 ::  ii,jj,kk,ll,mm,idx1,idx2
+INTEGER                 ::  ii,jj,kk,ll,mm,idx1,idx2,open_flag
 
 REAL(iwp),PARAMETER     ::  zero=0.0_iwp    
 REAL(iwp)               ::  e,v,det,rho,alpha1,beta1,omega,theta
@@ -55,13 +55,11 @@ REAL(iwp)               ::  period,pi,dtim,volume,c1,c2,c3,c4,q
 REAL(iwp)               ::  real_time,tol,up,alpha,beta,ld_scale
 REAL(iwp)               ::  outDisp(3),send(3),recv(3),tLoad
 REAL(iwp)               ::  scrit_scale,crack_start,exit_disp
-REAL(iwp)               ::  exit_flag
+REAL(iwp)               ::  exit_flag,dw
 
 CHARACTER(LEN=15)       ::  element
 CHARACTER(LEN=50)       ::  argv
 CHARACTER(LEN=6)        ::  ch
-
-! NEW
 CHARACTER(LEN=50)       ::  fname,job_name,label
 
 LOGICAL                 ::  consistent=.TRUE.,converged
@@ -75,7 +73,7 @@ REAL(iwp),ALLOCATABLE ::  ecm(:,:),x0_pp(:),d1x0_pp(:),d2x0_pp(:)
 REAL(iwp),ALLOCATABLE ::  store_km_pp(:,:,:),vu_pp(:),u_pp(:)
 REAL(iwp),ALLOCATABLE ::  store_mm_pp(:,:,:),p_pp(:),d_pp(:),x_pp(:)
 REAL(iwp),ALLOCATABLE ::  xnew_pp(:),pmul_pp(:,:),utemp_pp(:,:)
-REAL(iwp),ALLOCATABLE ::  temp(:),diag_precon_pp(:)
+REAL(iwp),ALLOCATABLE ::  temp(:),diag_precon_pp(:),value_shape(:)
 REAL(iwp),ALLOCATABLE ::  diag_precon_tmp(:,:),temp_pp(:,:,:)
 REAL(iwp),ALLOCATABLE ::  disp_pp(:),val(:,:),timest(:),eld_pp(:,:)
 REAL(iwp),ALLOCATABLE ::  r_pp(:),tot_r_pp(:),eps(:),sigma(:)
@@ -83,6 +81,7 @@ REAL(iwp),ALLOCATABLE ::  r_pp(:),tot_r_pp(:),eps(:),sigma(:)
 REAL(iwp),ALLOCATABLE :: stress_integral_pp(:,:),stressnodes_pp(:)
 REAL(iwp),ALLOCATABLE :: principal_integral_pp(:,:),princinodes_pp(:)
 REAL(iwp),ALLOCATABLE :: principal(:),reacnodes_pp(:),shape_integral_pp(:,:)
+!REAL(iwp),ALLOCATABLE :: strain_integral_pp(:,:)
 
 INTEGER,ALLOCATABLE   :: rest(:,:),g_num_pp(:,:),g_g_pp(:,:),node(:)    
 
@@ -167,6 +166,7 @@ CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
 
 CALL calc_nels_pp(argv,nels,npes,numpe,partitioner,nels_pp)
 
+
 ndof  =  nod*nodof
 ntot  =  ndof
 
@@ -177,6 +177,7 @@ ALLOCATE(rest(nr,nodof+1))
 g_num_pp    =  0
 g_coord_pp  =  zero
 rest        =  0
+open_flag   =  0
 
 CALL read_g_num_pp(argv,iel_start,nn,npes,numpe,g_num_pp)
 
@@ -190,18 +191,10 @@ ALLOCATE(points(nip,ndim),bee(nst,ntot),dee(nst,nst),jac(ndim,ndim),     &
    store_km_pp(ntot,ntot,nels_pp),utemp_pp(ntot,nels_pp),ecm(ntot,ntot), &
    pmul_pp(ntot,nels_pp),store_mm_pp(ntot,ntot,nels_pp),emm(ntot,ntot),  &
    temp_pp(ntot,ntot,nels_pp),diag_precon_tmp(ntot,nels_pp),fun(nod),    &
-   eps(nst),sigma(nst))
-
-  ALLOCATE(shape_integral_pp(nod,nels_pp))
-  ALLOCATE(stress_integral_pp(nod*nst,nels_pp))
-  ALLOCATE(stressnodes_pp(nodes_pp*nst))
-  ALLOCATE(principal_integral_pp(nod*nodof,nels_pp))
-  ALLOCATE(princinodes_pp(nodes_pp*nodof))
-  ALLOCATE(reacnodes_pp(nodes_pp*nodof))
-  ALLOCATE(principal(ndim))
-
+   eps(nst),sigma(nst),value_shape(nod))
 
 !*** end of ParaFEM input and initialisation *************************72
+
 
 
 !*** CGPACK part *****************************************************72
@@ -267,10 +260,10 @@ cgca_rot( 3, 3 ) = 1.0
 ! mean grain size, also mm
 ! Beam is of size 1 * 5 * 1
 ! From Kato2015 - Iron has grain dimater 0.3 and 0.5 mm
- cgca_dm = 0.2e0_rdef
+ cgca_dm = 0.5e0_rdef
 
 ! resolution, cells per grain
-  cgca_res = 1.0e3_rdef
+  cgca_res = 1.0e2_rdef
 
 ! cgpack length scale, also in mm
 ! Equivalent to crack propagation distance per unit of time,
@@ -551,6 +544,7 @@ pi=ACOS(-1._iwp); period=2._iwp*pi/omega;
 c1=(1._iwp-theta)*dtim; c2=beta1-c1; c3=alpha1+1._iwp/(theta * dtim)
 c4=beta1+theta*dtim
 
+
 CALL sample(element,points,weights)
 elements_1: DO iel=1,nels_pp;   
   volume=zero; emm=zero; ecm=zero
@@ -683,13 +677,13 @@ timesteps: DO tstep=1,nstep
 !----------------------------- RHS and loading --------------------------
   real_time=real_time+dtim;
   r_pp = zero
-  IF(tstep .eq. 1)THEN
-    r_pp = tot_r_pp
-	!tot_r_pp (theta*dtim*cos(omega*real_time)+c1*                 &
-                    !      cos(omega*(real_time-dtim)))
-  ELSE
-    r_pp = zero
-  ENDIF
+  !IF(tstep .eq. 1)THEN
+    !r_pp = tot_r_pp
+    r_pp = tot_r_pp*(theta*dtim*cos(omega*real_time)+c1*                 &
+                          cos(omega*(real_time-dtim)))
+ ! ELSE
+ !  r_pp = zero
+ ! ENDIF
 
   IF ( loaded_nodes > 0 ) THEN
     q = SUM_P( r_pp )
@@ -830,7 +824,6 @@ if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
 ! On Intel 16: subroutine cgca_clvgp_nocosum( coarray, rt, t, scrit, &
 !                     sub, gcus, periodicbc, iter, heartbeat, debug )
 
-
 ! rt - rotation tensor
 ! t  - stress tensor
 ! scrit - critical values of cleavage stress
@@ -891,6 +884,7 @@ sync all
 endif ! CAFE
 !*** end CGPACK part *************************************************72
 
+
 !*** ParaFEM part ****************************************************72
 
 ! Write Displacements out
@@ -900,11 +894,13 @@ IF(.true.)THEN
   INCLUDE 'node_displacement.f90'
 
   !- Write data files
-!  IF(tstep .GE. 100)THEN
+  !IF(tstep .GE. 100)THEN
     IF(tstep/npri*npri==tstep) THEN
+
       INCLUDE 'write_data_files.f90' 
-    ENDIF ! IF(tstep/npri*npri==tstep) (Ensi Files) 
-! ENDIF ! IF tstep .GE. crack_start
+
+    ENDIF  
+  !ENDIF
 
 ENDIF
 
@@ -947,7 +943,6 @@ DEALLOCATE(reacnodes_pp,shape_integral_pp)
      close( 12 )
   end if
 !*** end ParaFEM part ************************************************72
-
 
 !*** CGPACK part *****************************************************72
 ! deallocate all CGPACK arrays
