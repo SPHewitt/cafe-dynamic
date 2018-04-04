@@ -884,7 +884,6 @@ sync all
 endif ! CAFE
 !*** end CGPACK part *************************************************72
 
-
 !*** ParaFEM part ****************************************************72
 
 ! Write Displacements out
@@ -896,9 +895,7 @@ IF(.true.)THEN
   !- Write data files
   !IF(tstep .GE. 100)THEN
     IF(tstep/npri*npri==tstep) THEN
-
       INCLUDE 'write_data_files.f90' 
-
     ENDIF  
   !ENDIF
 
@@ -931,11 +928,12 @@ deallocate( pmul_pp )
 DEALLOCATE( xnew_pp )
 DEALLOCATE( g_coord_pp )
 
-DEALLOCATE(stress_integral_pp,stressnodes_pp)                        
-DEALLOCATE(principal_integral_pp)
-                   
-DEALLOCATE(princinodes_pp)
-DEALLOCATE(reacnodes_pp,shape_integral_pp)
+DEALLOCATE(stress_integral_pp)
+DEALLOCATE(stressnodes_pp)                        
+!DEALLOCATE(principal_integral_pp)                
+!DEALLOCATE(princinodes_pp)
+!DEALLOCATE(reacnodes_pp)
+DEALLOCATE(shape_integral_pp)
 
   IF ( numpe==it ) then
      write( 11, '(A,F10.4)') "This analysis took: ", elap_time()-timest(1)
