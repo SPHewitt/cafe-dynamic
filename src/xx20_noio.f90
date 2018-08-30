@@ -1,5 +1,4 @@
-!$Id: xx20std.f90 2240 2017-04-18 16:36:34Z mexas $
-PROGRAM xx20std
+PROGRAM xx20_noio
 !-----------------------------------------------------------------------
 ! Sam Hewitt (University of Manchester)
 ! Anton Shterenlikht (University of Bristol)
@@ -9,11 +8,8 @@ PROGRAM xx20std
 ! modifying p129 from 5th edition to link with the cgca modules.
 !
 !
-! This version must conform to F2008 standard.
-! This mainly means none of the routines using Cray extensions
-! can be used.
-!
-! This version has been tested on Intel 17
+! This version does not contains any serious I/O, it simply prints
+! the beam tip displacements and the timing information.
 !
 ! The CA CS is aligned with the FE CS, but not the same origin.
 ! Anyway, all cells are within the FE model, so mapping is easy.
@@ -59,7 +55,8 @@ REAL(iwp)               ::  real_time,tol,up,alpha,beta,ld_scale
 REAL(iwp)               ::  outDisp(3),send(3),recv(3),tLoad
 REAL(iwp)               ::  scrit_scale,crack_start,exit_disp
 REAL(iwp)               ::  exit_flag,dw,ca_res,ca_charlen
-REAL(iwp)               ::  tot_fracvol,fracvol
+REAL(iwp)               ::  tot_fracvol,fe_fracvol
+REAL(iwp)               ::  updatek,precon,builde,solve,getstress,cleave
 
 CHARACTER(LEN=15)       ::  element
 CHARACTER(LEN=50)       ::  argv
@@ -142,7 +139,12 @@ logical( kind=ldef ) :: cgca_solid
 character( len=6 ) :: cgca_citer
 !*** end CGPACK part *************************************************72
 
-
+updatek = 0.0
+precon = 0.0
+builde = 0.0
+solve = 0.0
+getstress = 0.0
+cleave = 0.0
 !------------------------ input and initialisation ---------------------
 ALLOCATE(timest(20))
 timest     =  zero
@@ -206,6 +208,7 @@ ALLOCATE(points(nip,ndim),bee(nst,ntot),dee(nst,nst),jac(ndim,ndim),     &
   stress_integral_pp    = zero
   stressnodes_pp        = zero
 
+timest(2)  =  elap_time()
 !*** end of ParaFEM input and initialisation *************************72
 
 !*** CGPACK part *****************************************************72
@@ -236,22 +239,14 @@ if ( cgca_img .eq. 1 ) then
   write (*,*) "Young's mod:", e, "Poisson's ratio", v
 end if
 
-
 ! Try to separate stdout output
 sync all
 
-! The physical dimensions of the box, must be the same
-! units as in the ParaFEM.
-! Must be fully within the FE model
 ! xx20 The PARAFEM Model is (0,0,-0.1) to (0.1,0.5,0)
-cgca_bsz = (/ 0.01, 0.01, 0.01 /)
-
-! Origin of the box cs, in the same units.
-! This gives the upper limits of the box at 0+10=10, 0+10=10, -10+10=0
-! all within the FE model.
+cgca_bsz = (/ 0.004, 0.004, 0.004 /)
 
 ! xx20 Origin of box is (0,0,-0.1)
-cgca_origin = (/ 0.09, 0.245, -0.1 /)
+cgca_origin = (/ 0.096, 0.248, -0.1 /)
 
 ! Rotation tensor *from* FE cs *to* CA cs.
 ! The box cs is aligned with the box.
@@ -273,7 +268,7 @@ cgca_rot( 3, 3 ) = 1.0
 ! cgpack length scale, also in mm
 ! Equivalent to crack propagation distance per unit of time,
 ! i.e. per second. Let's say 1 km/s = 1.0e3 m/s = 1.0e6 mm/s. 
- cgca_length = 1.0e6_rdef
+ cgca_length = 1.0e3_rdef!1.0e6_rdef
 
 ! each image calculates the coarray grid dimensions
 call cgca_gdim( cgca_nimgs, cgca_ir, cgca_qual )
@@ -310,21 +305,7 @@ call cgca_as( 1, cgca_c(1),  1, cgca_c(2),  1, cgca_c(3),              &
 !subroutine cgca_imco( space, lres, bcol, bcou )
 call cgca_imco( cgca_space, cgca_lres, cgca_bcol, cgca_bcou )
 
-! dump box lower and upper corners from every image
-write ( *,"(a,i0,2(a,3(es9.2,tr1)))" ) "img ", cgca_img,               &
-       " bcol: ", cgca_bcol, "bcou: ", cgca_bcou
-
 CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
-
-! and now in FE cs:
-!write ( *,"(a,i0,2(a,3(es9.2,tr1)),a)" ) "img: ", cgca_img,            &
-!   " FE bcol: (",                                                      &
-!    matmul( transpose( cgca_rot ),cgca_bcol ) + cgca_origin,           &
-!  ") FE bcou: (",                                                      &
-!    matmul( transpose( cgca_rot ),cgca_bcou ) + cgca_origin, ")"
-
-! confirm that image number .eq. MPI process number
-!write (*,*) "img",cgca_img," <-> MPI proc", numpe
 
 ! Allocate the tmp centroids array: cgca_pfem_centroid_tmp%r ,
 ! an allocatable array component of a coarray variable of derived type.
@@ -348,10 +329,6 @@ sync all ! must add execution segment
 call cgca_pfem_cenc( cgca_origin, cgca_rot, cgca_bcol, cgca_bcou )
 !call cgca_pfem_map( cgca_origin, cgca_rot, cgca_bcol, cgca_bcou )
 
-! Dump lcentr for debug
-! *** a lot *** of data
-!call cgca_pfem_lcentr_dump
-
 ! Allocate cgca_pfem_integrity%i(:), array component of a coarray of
 ! derived type. Allocating *local* array.
 ! i is set to 1.0 on allocation.
@@ -362,11 +339,6 @@ call cgca_pfem_ealloc( nip, nels_pp )
   
 ! initially set the Young's modulus to "e" everywhere
  cgca_pfem_enew = e
-
-! Dump the FE centroids in CA cs to stdout.
-! Obviously, this is an optional step, just for debug.
-! Can be called from any or all images.
-! call cgca_pfem_cendmp ! NO DUMP IN THIS VERSION - TAKES TOO LONG!!!
 
 ! Generate microstructure
 
@@ -418,6 +390,8 @@ sync all
 ! update grain connectivity, local routine, no sync needed
 call cgca_gcu( cgca_space )
 
+
+! ** HEWITT
 if ( cgca_img .eq. 1 ) then
   ! Setting Crack in the center of the domain
   WRITE(*,'(A)')"Setting crack Nucleus"
@@ -438,6 +412,7 @@ sync all
  cgca_charlen = ca_charlen
 
  IF(numpe==1)THEN
+   WRITE(*,'(A)')" "
    WRITE(*,"(2(A,F10.5))")"Resolution: ", cgca_res, " Charlen: ", cgca_charlen
  ENDIF
 ! Each image will update its own cgca_space coarray.
@@ -455,26 +430,14 @@ sync all !
 ! required, to avoid extra sync.
 call cgca_pfem_ctdalloc
 
-! Img 1 dumps space arrays to files.
-! Remote comms, no sync inside, so most likely want to sync afterwards
-if ( cgca_img .eq. 1 ) write (*,*) "dumping model to files"
-!call cgca_fwci( cgca_space, cgca_state_type_grain, "zg0text.raw" )
-!call cgca_fwci( cgca_space, cgca_state_type_frac,  "zf0text.raw" )
-! HEWITT
-call cgca_pswci( cgca_space, cgca_state_type_grain, "zg0.raw" )
-call cgca_pswci( cgca_space, cgca_state_type_frac,  "zf0.raw" )
-if ( cgca_img .eq. 1 ) write (*,*) "finished dumping model to files"
-
 ! Allocate the stress array component of cgca_pfem_stress coarray
 ! subroutine cgca_pfem_salloc( nels_pp, intp, comp )
 call cgca_pfem_salloc( nels_pp, nip, nst )
 
 ! Need a sync after file write, because not sure what is coming next...
 sync all
-
+timest(3)  =  elap_time()
 !*** end CGPACK part *************************************************72
-
-
 
 !----------  find the steering array and equations per process ---------
 CALL rearrange(rest)
@@ -517,6 +480,7 @@ ALLOCATE(x0_pp(neq_pp),d1x0_pp(neq_pp),x1_pp(neq_pp),vu_pp(neq_pp),     &
    r_pp=zero; tot_r_pp=zero ; disp_pp=zero ; eld_pp=zero
    temp = 0
 
+timest(4)  =  elap_time()
 !---------------------------- Calculate Mass Matrix -------------------------
 store_mm_pp=zero
 
@@ -556,7 +520,7 @@ elements_1: DO iel=1,nels_pp;
    END IF
    store_mm_pp(:,:,iel)=emm
  END DO elements_1
- 
+ timest(5)  =  elap_time()
 
 ! Read Loads
 IF ( loaded_nodes > 0 ) THEN
@@ -569,40 +533,53 @@ IF ( loaded_nodes > 0 ) THEN
   end if
   DEALLOCATE(g_g_pp)
 
+
+  ! Scaling Factor for Force
+  tot_r_pp=tot_r_pp * ld_scale
+  tLoad=SUM_P(tot_r_pp)
+
+ timest(6)  =  elap_time()
 IF(numpe==it) THEN
      OPEN(11,FILE=argv(1:nlen)//".res",STATUS='REPLACE',ACTION='WRITE')
        WRITE(11,'(A,I6,A)') "This job ran on ",npes," processes"
        WRITE(11,'(A,3(I12,A))') "There are ",nn," nodes ",nr,                &
-     " restrained and ", neq," equations"
-    WRITE(11,'(A,E12.4,2(A,F10.2))') " Youngs Modulus",e," Poissons Ratio",v,                &
-     " Density", rho
-    WRITE(11,'(4(A,F10.2))') "Alpha1",alpha1," Beta1",beta1,                &
-    " Omega", omega," Theta",theta
-    write( 11,'(A,F10.4)') "Time after setup is:", elap_time()-timest(1)
+             " restrained and ", neq," equations"
+       WRITE(11,'(A)')" "
+       WRITE(11,'(A,E12.4,2(A,F10.2))') "Youngs Modulus",e," Poissons Ratio",v,                &
+                                        " Density", rho
+       WRITE(11,'(A)')" "
+       WRITE(11,'(4(A,F10.2))') "Alpha1",alpha1," Beta1",beta1,                &
+                                " Omega", omega," Theta",theta
+       WRITE(11,'(A)')" "
+       WRITE(11,'(2(A,E12.4))') "Total Load: ",tLoad," Load factor: ",ld_scale
+       WRITE(11,'(A)')" "
+       WRITE(11,'(A)')"Intilisation Timings: "
+       WRITE(11,'(A)') "---------------------"
+       WRITE(11,'(A,F10.4)') "ParaFEM File I/O:           ", timest(2)-timest(1)
+       WRITE(11,'(A,F10.4)') "CASUP Initialise:           ", timest(3)-timest(2)
+       WRITE(11,'(A,F10.4)') "ParaFEM Make ggl:           ", timest(4)-timest(3)
+       WRITE(11,'(A,F10.4)') "ParaFEM Create Mass Matrix: ", timest(5)-timest(4)
+       WRITE(11,'(A,F10.4)') "ParaFEM Read loads:         ", timest(6)-timest(5)
+       WRITE(11,'(A,F10.4)') "Total Setup Time:           ", elap_time()-timest(1)
+       WRITE(11,'(A)')" "
+       WRITE(11,'(A)') "  Time        Update K    Precon      Build Eqns  Solve       Iters Sigma       Cleavage  "
+       WRITE(11,'(A)') "------------------------------------------------------------------------------------------"
   END IF 
 
 
 !---------------------------- initial conditions -------------------------
  x0_pp=zero; d1x0_pp=zero; d2x0_pp=zero; real_time=zero
 
-  ! Scaling Factor for Force
-  tot_r_pp=tot_r_pp * ld_scale
-  
-  tLoad=SUM_P(tot_r_pp)
-  IF(numpe==it) THEN
-   WRITE(11,'(2(A,E12.4))') "Total Load: ",tLoad," Load Scale: ",ld_scale
-   WRITE(11,'(A)') "   Time t  cos(omega*t) Displacement Iterations"
-   WRITE(11,'(3E12.4,I10)') real_time,cos(omega*real_time),x1_pp(is),iters
-  END IF
-
-
 !-------------------------------------------------------------------------
 !---------------------------- time stepping loop ------------------------- 
 !-------------------------------------------------------------------------
+ timest(7)  =  elap_time()
+
 cgca_liter=1
 timesteps: DO tstep=1,nstep
   cgca_liter = cgca_liter + 1  !counter for cafe output
 
+ timest(8)  =  elap_time()
 !------ element stiffness integration and build the preconditioner ---72
   dee = zero
 
@@ -623,7 +600,9 @@ timesteps: DO tstep=1,nstep
       MATMUL( MATMUL( TRANSPOSE(bee), dee ), bee ) * det * weights(i)
     END DO gauss_pts_1
   END DO elements_2a
-  
+
+   timest(9)  =  elap_time()
+   updatek = updatek + (timest(9)-timest(8))
   ! Calculate Updated Diagonal Preconditioner
   diag_precon_tmp = zero
 
@@ -637,6 +616,8 @@ timesteps: DO tstep=1,nstep
   diag_precon_pp = zero
   CALL scatter( diag_precon_pp, diag_precon_tmp )
 
+   timest(10)  =  elap_time()
+   precon = precon + timest(10)-timest(9)
 !---------------------------- Displacement part ------------------------------
   elements_3: DO iel=1,nels_pp
     temp_pp(:,:,iel)=store_km_pp(:,:,iel)*c2+store_mm_pp(:,:,iel)*c3
@@ -687,6 +668,8 @@ timesteps: DO tstep=1,nstep
   p_pp = d_pp
   x_pp = zero
 
+  timest(11)  =  elap_time()
+  builde = builde + timest(11)- timest(10)
 !--------------------- preconditioned cg iterations --------------------
   iters=0
   timest(3) = elap_time()
@@ -720,10 +703,13 @@ timesteps: DO tstep=1,nstep
   d2x1_pp=(d1x1_pp-d1x0_pp)/(theta*dtim)-d2x0_pp*(1._iwp-theta)/theta
   x0_pp=x1_pp; d1x0_pp=d1x1_pp; d2x0_pp=d2x1_pp; utemp_pp=zero
 
+  timest(12)  =  elap_time()
+  solve = solve + timest(12)-timest(11)
+
   IF ( numpe==it ) THEN
     write(*,'(A,I6)')"The number of iterations to convergence was ",iters
     write(*,'(A,F10.4)')"Time to solve equations was  :",                &
-      elap_time()-timest(3)
+      timest(12)-timest(11)
     write(*,'(A,E12.4)')"The central nodal displacement is :",xnew_pp(is)
   END IF
 
@@ -731,10 +717,10 @@ timesteps: DO tstep=1,nstep
 ! IF CAFE
 ! Manual Input
 
-IF(.TRUE. .AND. tstep .GE. crack_start) THEN
+IF((.TRUE.) .AND. (tstep .EQ. crack_start)) THEN
 
+  timest(13)  =  elap_time()
   CALL gather(xnew_pp(1:),eld_pp)
-
   elmnts: DO iel = 1, nels_pp
     intpts: DO i = 1, nip
       call deemat(dee, cgca_pfem_enew( i, iel ), v)
@@ -751,20 +737,24 @@ IF(.TRUE. .AND. tstep .GE. crack_start) THEN
 
     END DO intpts
   end do elmnts
+
+  timest(14)  =  elap_time()
+  getstress = getstress + timest(14)-timest(13)
 !*** end ParaFEM part ************************************************72
 
 !*** CGPACK part *****************************************************72
-! debug: dump stresses to stdout
-!call cgca_pfem_sdmp
-! dump stresses from last image for element 1
 
-!if ( cgca_img .eq. cgca_nimgs ) then
-!  do i = 1, nip
-!   write (*,"(2(a,i0),a,6es10.2)") "img: ", cgca_nimgs,               &
-!         " FE 1 int. p. ", i, " stress: ",                            &
-!          cgca_pfem_stress % stress( 1 , i , : )
-!  end do
-!end if
+if ( cgca_img .eq. cgca_nimgs ) then
+  do i = 1, nip
+   write (*,"(2(a,i0),a,6es10.2)") "img: ", cgca_nimgs,               &
+         " FE 1 int. p. ", i, " stress: ",                            &
+          cgca_pfem_stress % stress( 1 , i , : )
+  end do
+
+  PRINT*,cgca_stress
+end if
+
+
 
 ! all images sync here
 sync all
@@ -773,17 +763,11 @@ sync all
 !   subroutine cgca_pfem_simg( simg )
 !   real( kind=rdef ), intent(out) :: simg(3,3)
 call cgca_pfem_simg( cgca_stress )
-!write (*,*) "img:", cgca_img, " mean s tensor:", cgca_stress
+write (*,*) "img:", cgca_img, " mean s tensor:", cgca_stress
 
 ! all images wait for each other, to make sure the stress arrays
 ! are not modified until all images calculate their mean values
 sync all
-
-! no real time increments in this problem
-! I use the inverse of the length scale,
-! which gives 1mm of crack propagation per increment maximum.
-! I then can multiply it by a factor, e.g. a factor of 3 will mean
-! that I get 3mm max ( 1/3 of the model ) per load increment.
 
 ! ** CAUSE FOR DEBATE
 ! Time Increment for this problem needs researching
@@ -796,6 +780,7 @@ sync all
 
 if (cgca_clvg_iter .LE. 0) cgca_clvg_iter=1
 
+!cgca_clvg_iter = 200
 if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
                                    "clvg iter:", cgca_clvg_iter
 
@@ -817,19 +802,8 @@ if ( cgca_img .eq. 1 ) write (*,*) "load inc:", cgca_liter,            &
 ! heartbeat - if >0 then dump a message every heartbeat iterations
 
 call cgca_clvgp_nocosum( cgca_space, cgca_grt, cgca_stress,            &
-     cgca_scrit_scale * cgca_scrit, cgca_clvgsd, cgca_gcupdn,          &
-     .false., cgca_clvg_iter, 10, cgca_yesdebug )
-
-! dump the model out, no sync inside (fwci-ASCII,pswci-BINARY)
-IF(tstep/npri*npri==tstep) THEN
-  if ( cgca_img .eq. 1 ) write (*,*) "dumping model to file"
-  write ( cgca_citer, "(i0)" ) cgca_liter
-  call cgca_pswci( cgca_space, cgca_state_type_frac,                     &
-                  "zf"//trim( cgca_citer )//".raw" )
-  !call cgca_fwci( cgca_space, cgca_state_type_frac,                     &  
-  !                "zf"//trim( cgca_citer )//"text.raw" )
-  if ( cgca_img .eq. 1 ) write (*,*) "finished dumping model to file"
-ENDIF
+     cgca_scrit_scale * cgca_scrit, cgca_clvgsp, cgca_gcupdn,          &
+     .false., cgca_clvg_iter, 100, cgca_yesdebug )
 
 sync all
      
@@ -839,13 +813,9 @@ sync all
 ! This includes grain boundaries (1, -1 ... -6)
 call cgca_fv( cgca_space, cgca_fracvol )
 
-write (*,*) "img:", cgca_img, "fracvol:", cgca_fracvol
+fe_fracvol = cgca_fracvol
+tot_fracvol = 0
 
-
-fracvol = cgca_fracvol
-tot_fracvol = 0.0
-
-! Will requre MPI Reduce Collect as not a coarray
 CALL MPI_REDUCE(cgca_fracvol,tot_fracvol,1,MPI_REAL8,MPI_SUM,0,MPI_COMM_WORLD,ierr)
 
 if (numpe .eq. 1 ) PRINT*,"Total Fracture Volume", tot_fracvol
@@ -866,27 +836,48 @@ sync all
 call cgca_pfem_uym( e, nels_pp )
 
 ! dump updated Young's modulus
-write (*,*) "img:", cgca_img, "*min* Young's mod:",                    &
-            minval( cgca_pfem_enew )
+!write (*,*) "img:", cgca_img, "*min* Young's mod:",                    &
+!            minval( cgca_pfem_enew )
 sync all
 
+
+  timest(15)  =  elap_time()
+  cleave = cleave  + timest(15) - timest(14)
 endif ! CAFE
 !*** end CGPACK part *************************************************72
 
 !*** ParaFEM part ****************************************************72
+IF((tstep .EQ. crack_start))THEN
+  IF(numpe==it) THEN
+    WRITE(11,'(5E12.4,I6,2E12.4)') real_time,timest(9)-timest(8), &
+    timest(10)-timest(9),timest(11)-timest(10),timest(12)-timest(11), &
+    iters, timest(14)-timest(13),timest(15)-timest(14)
+  ENDIF
+ELSE
+  IF(numpe==it) THEN
+    WRITE(11,'(5E12.4,I6)') real_time,timest(9)-timest(8), &
+    timest(10)-timest(9),timest(11)-timest(10),timest(12)-timest(11), &
+    iters
+  ENDIF
+ENDIF
 
-! Write Displacements out
-IF(.true.)THEN
+! Send Displacement of node to Master
+IF(numpe==it) THEN
+  send=x1_pp(is-2:is)
+  CALL MPI_SEND(send,3,MPI_REAL8,0,0,MPI_COMM_WORLD,ier)
+END IF
 
-  ! Write the displacement at a single node to file
-  INCLUDE 'node_displacement.f90'
+IF(numpe==1) THEN
+  ! NOTE: recieve processor entered manually
+  CALL MPI_RECV(recv,3,MPI_REAL8,npes-1,0,MPI_COMM_WORLD,statu,ier)
+  outDisp=recv
+END IF
 
-  !- Write data files
-  !IF(tstep .GE. 100)THEN
-    !IF(tstep/npri*npri==tstep) THEN
-      !INCLUDE 'write_data_files.f90' 
-    !ENDIF  
-  !ENDIF
+IF (numpe==1)THEN
+  IF(tstep.EQ.1)THEN
+    OPEN(10,FILE='Displacement.dat',STATUS='replace',ACTION='write')
+  ENDIF
+  WRITE(10,'(E12.4,E12.4,3E12.4,E12.4)') real_time,tLoad,outDisp,tot_fracvol
 ENDIF
 
 exit_flag = ABS(outDisp(3))
@@ -924,9 +915,19 @@ DEALLOCATE(stressnodes_pp)
 DEALLOCATE(shape_integral_pp)
 
   IF ( numpe==it ) then
-     write( 11, '(A,F10.4)') "This analysis took: ", elap_time()-timest(1)
-     close( 11 )
-     close( 12 )
+     WRITE(11, '(A)') " "
+     WRITE(11,'(A)')"Summary of Timings:   "
+     WRITE(11,'(A)') "--------------------------------------"
+     WRITE(11,'(A,F10.4)') "Updating stiffness matrix: ", updatek
+     WRITE(11,'(A,F10.4)') "Building preconditioner:   ", precon
+     WRITE(11,'(A,F10.4)') "Building eqns:             ", builde
+     WRITE(11,'(A,F10.4)') "Solving Eqns:              ", solve
+     WRITE(11,'(A,F10.4)') "Getting Stress tensor:     ", getstress
+     WRITE(11,'(A,F10.4)') "Cleavage:                  ", cleave
+     WRITE(11,'(A)') " "
+     WRITE(11,'(A,F10.4)') "Total analysis took:       ", elap_time()-timest(1)
+     CLOSE(11 )
+     CLOSE(12 )
   end if
 !*** end ParaFEM part ************************************************72
 
@@ -942,7 +943,7 @@ call cgca_pfem_integdalloc
 
 !*** ParaFEM part ****************************************************72
 !CALL SHUTDOWN() ! cannot call MPI_FINALIZE with coarrays with Intel 16.
-END PROGRAM xx20std
+END PROGRAM xx20_noio
 
 
 SUBROUTINE READ_DEF(job_name,alpha1,beta1,e,element,           &
@@ -951,7 +952,7 @@ SUBROUTINE READ_DEF(job_name,alpha1,beta1,e,element,           &
                     theta,tol,v,dtim,load_scale,scrit_scale,   & 
                     crack_start,exit_disp,resolution,charlen)
 
-USE mpi_wrapper
+!USE mpi_wrapper
 USE precision
 USE mp_interface
 

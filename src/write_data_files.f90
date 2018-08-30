@@ -1,14 +1,20 @@
-IF(.NOT. ALLOCATED(shape_integral_pp))THEN
-  ALLOCATE(shape_integral_pp(nod,nels_pp))
-  ALLOCATE(stress_integral_pp(nod*nst,nels_pp))
-  ALLOCATE(stressnodes_pp(nodes_pp*nst))
+!IF(.NOT. ALLOCATED(shape_integral_pp))THEN
+!  ALLOCATE(shape_integral_pp(nod,nels_pp))
+!  ALLOCATE(stress_integral_pp(nod*nst,nels_pp))
+!  ALLOCATE(stressnodes_pp(nodes_pp*nst))
+
   !ALLOCATE(principal_integral_pp(nod*nodof,nels_pp))
   !ALLOCATE(princinodes_pp(nodes_pp*nodof))
   !ALLOCATE(reacnodes_pp(nodes_pp*nodof))
  !ALLOCATE(principal(ndim))
   !ALLOCATE(strain_integral_pp(nod*nst,nels_pp))
-ENDIF
+!ENDIF
 
+
+
+CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
+PRINT*,"numpe:", numpe
+CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
 !------------------------------------------------------------------------------
 ! 15. Print out displacements, stress, principal stress and reactions
 !------------------------------------------------------------------------------
@@ -16,12 +22,21 @@ ENDIF
 
   WRITE(ch,'(I6.6)') tstep
 
+  ! Create All files at first occurence
   IF(numpe==1 .AND. open_flag==0) THEN
     open_flag=1
+
+    ! Displacement
     fname = job_name(1:INDEX(job_name, " ")-1) //".dis"
     OPEN(24, file=fname, status='new', action='write')
+    CLOSE(24)
+
+    ! Stress
     fname = job_name(1:INDEX(job_name, " ")-1) //".str"
-    OPEN(25, file=fname, status='new', action='write')
+    OPEN(UNIT=25, file=fname, status='new', action='write')
+    CLOSE(25)
+ 
+    
     !fname = job_name(1:INDEX(job_name, " ")-1) //".pri"
     !OPEN(26, file=fname, status='UNKNOWN', action='write')
     !fname = job_name(1:INDEX(job_name, " ")-1) //".vms"
@@ -31,27 +46,18 @@ ENDIF
     !fname = job_name(1:INDEX(job_name, " ")-1) //".est"
     !OPEN(29, file=fname, status='UNKNOWN', action='write')
   END IF
-
- IF(numpe==1) THEN
-    fname = job_name(1:INDEX(job_name, " ")-1) //".dis"
-    OPEN(24, file=fname, status='old', action='write',position='append')
-    fname = job_name(1:INDEX(job_name, " ")-1) //".str"
-    OPEN(25, file=fname, status='old', action='write',position='append')
-    !fname = job_name(1:INDEX(job_name, " ")-1) //".pri"
-    !OPEN(26, file=fname, status='UNKNOWN', action='write')
-    !fname = job_name(1:INDEX(job_name, " ")-1) //".vms"
-    !OPEN(27, file=fname, status='UNKNOWN', action='write')
-    !fname = job_name(1:INDEX(job_name, " ")-1) //".rea"
-    !OPEN(28, file=fname, status='UNKNOWN', action='write')
-    !fname = job_name(1:INDEX(job_name, " ")-1) //".est"
-    !OPEN(29, file=fname, status='UNKNOWN', action='write')
-  END IF
-
-
 
 !------------------------------------------------------------------------------
 ! 16a. Displacements
 !------------------------------------------------------------------------------
+  IF(numpe==1) THEN
+   fname = job_name(1:INDEX(job_name, " ")-1) //".dis"
+   print*,fname
+   ! CRAY
+   OPEN(24, file=fname, status='old', action='write',position='append')
+
+  ENDIF
+
   eld_pp = zero
 
   CALL gather(xnew_pp(1:),eld_pp)
@@ -65,7 +71,7 @@ ENDIF
   CALL write_nodal_variable(label,24,tstep,nodes_pp,npes,numpe,ndim,disp_pp)
 
 
-  IF(numpe==1) CLOSE(24)
+  IF(numpe==1)CLOSE(24)
 
 !------------------------------------------------------------------------------
 ! 16b. Stresses
@@ -79,7 +85,7 @@ ENDIF
   !reacnodes_pp          = zero
   !utemp_pp              = zero
 
-CALL sample(element,points,weights)
+  CALL sample(element,points,weights)
 
   DO iel = 1,nels_pp
 
@@ -100,7 +106,14 @@ CALL sample(element,points,weights)
 
       CALL shape_fun(fun,points,ii)
       dw = det * weights(ii)
+
+      !if(iel==1 .AND.numpe==1)PRINT*,"fun*dw",fun(:)*dw
+
+      !if(iel==1 .AND.numpe==1 .AND. ii==1)PRINT*,"Shape Integral",shape_integral_pp(:,iel)
+
       shape_integral_pp(:,iel) = shape_integral_pp(:,iel) + fun(:) * dw
+
+      !if(iel==1 .AND.numpe==1)PRINT*,"Shape Integral",shape_integral_pp(:,iel)
 
       DO jj = 1,nod
         idx1 = (jj-1)*nst
@@ -108,14 +121,7 @@ CALL sample(element,points,weights)
         DO kk = 1,nst
           stress_integral_pp(idx1+kk,iel) = stress_integral_pp(idx1+kk,iel) +   &
                                            fun(jj)*sigma(kk)*det*weights(ii)
-
-          !strain_integral_pp(idx1+j,iel) = strain_integral_pp(idx1+j,iel) +&
-          !              fun(jj)*eps(kk)*det*weights(ii)
         END DO !nst
-        !DO kk = 1,nodof
-        !  principal_integral_pp(idx2+kk,iel) = principal_integral_pp(idx2+kk,iel) + &
-        !                                      fun(jj)*principal(kk)*det*weights(ii)
-        !END DO !nodof
       END DO !node
 
     END DO !gauss
@@ -126,11 +132,35 @@ CALL sample(element,points,weights)
 ! 16c. Stress
 !------------------------------------------------------------------------------
 
+  !if(numpe==1)PRINT*,"Shape Integral FINAL",shape_integral_pp(:,1)
+
+  IF(numpe==1) THEN
+   fname = job_name(1:INDEX(job_name, " ")-1) //".str"
+   PRINT*,fname
+   
+   ! CRAY
+   !OPEN(25, file=fname, status='old', action='write',position='append')
+
+   ! Intel
+   !INQUIRE (FILE=fname, OPENED=I_OPEN, EXIST=I_EXIST, NUMBER=I_NUMBER)
+   !PRINT*,I_OPEN,I_EXIST,I_NUMBER
+ 
+   OPEN(UNIT=25, file=fname, status='OLD', action='WRITE',access='APPEND')
+
+   PRINT*,"OpenFILE"
+  ENDIF
+
+
   label = "*STRESS"
+   CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
+
+   PRINT*,numpe,"nodal_projection"
+
   CALL nodal_projection(npes,nn,nels_pp,g_num_pp,nod,nst,nodes_pp,            &
                         node_start,node_end,shape_integral_pp,                &
                         stress_integral_pp,stressnodes_pp)
 
+   PRINT*,numpe,"Write_variable"
   CALL write_nodal_variable(label,25,tstep,nodes_pp,npes,numpe,nst,               &
                             stressnodes_pp)
                             
