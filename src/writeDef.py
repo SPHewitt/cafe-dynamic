@@ -171,25 +171,9 @@ if __name__ == "__main__":
         data = data.split(' ') 
     
     char = float(data[5])*1.25
-    dirname, filename = os.path.split(os.path.abspath(__file__)) 
-    dirname=dirname.split('/')
-    nodes = float(dirname[-1])
-    
-    if nodes == 0:
-        cores = 1.0
-    else:
-        cores = nodes *24
-
-    # Calculate Resolution
-    # --------------------
-    CELLS_CORE = 400000.0
-    GRAINS = 512.0
-    # --------------------
-    total_cells = CELLS_CORE*cores
-    res = int(total_cells/512.0)
 
     # Declare Definitions Object
-    myDef = definition(scrit=1e-16,load=5000,charlen=char,resolution=res)                
+    myDef = definition(scrit=1e-16,load=5000,charlen=char,resolution=1e4)                
     
     # write defintion to File
     writeToFile(myDef,datfile,args.output)

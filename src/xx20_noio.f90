@@ -92,7 +92,7 @@ INTEGER,ALLOCATABLE   :: rest(:,:),g_num_pp(:,:),g_g_pp(:,:),node(:)
 ! CGPACK parameters
 
 integer, parameter :: cgca_linum=5 ! number of loading iterations
-logical( kind=ldef ), parameter :: cgca_yesdebug = .false.,            &
+logical( kind=ldef ), parameter :: cgca_yesdebug = .true.,            &
  cgca_nodebug = .false.
 real( kind=rdef ), parameter :: cgca_zero = 0.0_rdef,                  &
  cgca_one = 1.0_rdef,                                                  &
@@ -243,10 +243,10 @@ end if
 sync all
 
 ! xx20 The PARAFEM Model is (0,0,-0.1) to (0.1,0.5,0)
-cgca_bsz = (/ 0.004, 0.004, 0.004 /)
+cgca_bsz = (/ 0.04, 0.04, 0.04 /)
 
 ! xx20 Origin of box is (0,0,-0.1)
-cgca_origin = (/ 0.096, 0.248, -0.1 /)
+cgca_origin = (/ 0.06, 0.28, -0.04 /)
 
 ! Rotation tensor *from* FE cs *to* CA cs.
 ! The box cs is aligned with the box.
@@ -258,7 +258,8 @@ cgca_rot( 3, 3 ) = 1.0
 ! mean grain size, also mm
 ! Beam is of size 0.1 * 0.5 * 0.1
 ! From Kato2015 - Iron has grain dimater 0.3 and 0.5 mm
- cgca_dm = 0.0005e0_rdef
+!  cgca_dm = 0.0005e0_rdef
+ cgca_dm = 0.005e0_rdef
 
 ! resolution, cells per grain
 ! Coarse resolution for testing ** INCREASE FOR PRODUCTION RUNS
@@ -305,7 +306,22 @@ call cgca_as( 1, cgca_c(1),  1, cgca_c(2),  1, cgca_c(3),              &
 !subroutine cgca_imco( space, lres, bcol, bcou )
 call cgca_imco( cgca_space, cgca_lres, cgca_bcol, cgca_bcou )
 
+! dump box lower and upper corners from every image
+write ( *,"(a,i0,2(a,3(es9.2,tr1)))" ) "img ", cgca_img,               &
+       " bcol: ", cgca_bcol, "bcou: ", cgca_bcou
+
 CALL MPI_BARRIER(MPI_COMM_WORLD,ier)
+
+! and now in FE cs:
+write ( *,"(a,i0,2(a,3(es9.2,tr1)),a)" ) "img: ", cgca_img,            &
+   " FE bcol: (",                                                      &
+    matmul( transpose( cgca_rot ),cgca_bcol ) + cgca_origin,           &
+  ") FE bcou: (",                                                      &
+    matmul( transpose( cgca_rot ),cgca_bcou ) + cgca_origin, ")"
+
+! confirm that image number .eq. MPI process number
+write (*,*) "img",cgca_img," <-> MPI proc", numpe
+
 
 ! Allocate the tmp centroids array: cgca_pfem_centroid_tmp%r ,
 ! an allocatable array component of a coarray variable of derived type.
@@ -329,6 +345,10 @@ sync all ! must add execution segment
 call cgca_pfem_cenc( cgca_origin, cgca_rot, cgca_bcol, cgca_bcou )
 !call cgca_pfem_map( cgca_origin, cgca_rot, cgca_bcol, cgca_bcou )
 
+! Dump lcentr for debug
+! *** a lot *** of data
+!call cgca_pfem_lcentr_dump
+
 ! Allocate cgca_pfem_integrity%i(:), array component of a coarray of
 ! derived type. Allocating *local* array.
 ! i is set to 1.0 on allocation.
@@ -339,6 +359,11 @@ call cgca_pfem_ealloc( nip, nels_pp )
   
 ! initially set the Young's modulus to "e" everywhere
  cgca_pfem_enew = e
+
+! Dump the FE centroids in CA cs to stdout.
+! Obviously, this is an optional step, just for debug.
+! Can be called from any or all images.
+ call cgca_pfem_cendmp
 
 ! Generate microstructure
 
@@ -413,7 +438,7 @@ sync all
 
  IF(numpe==1)THEN
    WRITE(*,'(A)')" "
-   WRITE(*,"(2(A,F10.5))")"Resolution: ", cgca_res, " Charlen: ", cgca_charlen
+   WRITE(*,"(A,E12.4,A,F10.5))")"Resolution: ", cgca_res, " Charlen: ", cgca_charlen
  ENDIF
 ! Each image will update its own cgca_space coarray.
 !subroutine cgca_pfem_partin( coarray, cadim, lres, bcol, charlen, &
@@ -429,6 +454,18 @@ sync all !
 ! Could've done this earlier, but best to wait until sync all is
 ! required, to avoid extra sync.
 call cgca_pfem_ctdalloc
+
+
+! Img 1 dumps space arrays to files.
+! Remote comms, no sync inside, so most likely want to sync afterwards
+if ( cgca_img .eq. 1 ) write (*,*) "dumping model to files"
+!call cgca_fwci( cgca_space, cgca_state_type_grain, "zg0text.raw" )
+!call cgca_fwci( cgca_space, cgca_state_type_frac,  "zf0text.raw" )
+! HEWITT
+call cgca_pswci( cgca_space, cgca_state_type_grain, "zg0.raw" )
+call cgca_pswci( cgca_space, cgca_state_type_frac,  "zf0.raw" )
+if ( cgca_img .eq. 1 ) write (*,*) "finished dumping model to files"
+
 
 ! Allocate the stress array component of cgca_pfem_stress coarray
 ! subroutine cgca_pfem_salloc( nels_pp, intp, comp )
